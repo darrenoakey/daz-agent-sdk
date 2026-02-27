@@ -40,8 +40,8 @@ def _resolve_steps(tier: Tier, steps: int | None, config: Config | None) -> int:
 # ##################################################################
 # build command
 # constructs the generate_image subprocess argument list from the
-# supplied parameters. transparent flag is NOT included here —
-# background removal is a separate post-processing step.
+# supplied parameters. when transparent=True, passes --transparent
+# which enforces .png output and runs background removal automatically.
 def _build_command(
     prompt: str,
     *,
@@ -50,8 +50,9 @@ def _build_command(
     output: Path,
     model: str,
     steps: int,
+    transparent: bool = False,
 ) -> list[str]:
-    return [
+    cmd = [
         "generate_image",
         "--prompt", prompt,
         "--width", str(width),
@@ -60,13 +61,11 @@ def _build_command(
         "--model", model,
         "--steps", str(steps),
     ]
+    if transparent:
+        cmd.append("--transparent")
+    return cmd
 
 
-# ##################################################################
-# build remove background command
-# constructs the remove-background subprocess argument list.
-def _build_remove_background_command(path: Path) -> list[str]:
-    return ["remove-background", str(path)]
 
 
 # ##################################################################
@@ -163,13 +162,10 @@ async def generate_image(
         output=output_path,
         model=resolved_model,
         steps=resolved_steps,
+        transparent=transparent,
     )
 
     await _run_subprocess(cmd, timeout=timeout, label="generate_image")
-
-    if transparent:
-        rb_cmd = _build_remove_background_command(output_path)
-        await _run_subprocess(rb_cmd, timeout=60.0, label="remove-background")
 
     if logger is not None:
         logger.log_event("image_complete", path=str(output_path))

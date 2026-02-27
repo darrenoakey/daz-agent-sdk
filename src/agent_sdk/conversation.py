@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import AsyncIterator, Type
+from typing import Any, AsyncIterator, Type
 from uuid import UUID, uuid4
 
 from agent_sdk.config import Config, get_tier_chain, load_config
@@ -29,6 +29,8 @@ class Conversation:
     # init
     # set up a new conversation with optional name, tier, system prompt,
     # provider/model overrides, and config. the logger is created on enter.
+    # mcp_servers is forwarded to the claude provider when set — it maps
+    # server names to McpStdioServerConfig-compatible dicts.
     def __init__(
         self,
         name: str | None = None,
@@ -38,6 +40,7 @@ class Conversation:
         provider: str | None = None,
         model: str | None = None,
         config: Config | None = None,
+        mcp_servers: dict[str, Any] | None = None,
     ) -> None:
         self._name = name
         self._tier = tier
@@ -45,6 +48,7 @@ class Conversation:
         self._provider_name = provider
         self._model_id = model
         self._config = config
+        self._mcp_servers = mcp_servers
         self._history: list[Message] = []
         self._logger: ConversationLogger | None = None
         self._conversation_id: UUID | None = None
@@ -98,16 +102,16 @@ class Conversation:
         provider_entry, model_info = self._resolve_provider_model(effective_tier)
         providers_chain = self._build_providers_chain(effective_tier, provider_entry)
 
+        mcp_servers = self._mcp_servers
+
         async def execute_fn(chain_entry: str) -> Response | StructuredResponse:
             pname, mid = _split_entry(chain_entry)
             prov = _require_provider(pname)
             minfo = _require_model(pname, mid, effective_tier)
-            return await prov.complete(
-                messages,
-                minfo,
-                schema=schema,
-                timeout=timeout,
-            )
+            kwargs: dict[str, Any] = {"schema": schema, "timeout": timeout}
+            if mcp_servers is not None:
+                kwargs["mcp_servers"] = mcp_servers
+            return await prov.complete(messages, minfo, **kwargs)
 
         result = await execute_with_fallback(
             effective_tier.value,
@@ -148,8 +152,13 @@ class Conversation:
 
         chunks: list[str] = []
 
+        mcp_servers = self._mcp_servers
+
         async def _generate() -> AsyncIterator[str]:
-            async for chunk in prov.stream(messages, minfo, timeout=timeout):
+            stream_kwargs: dict[str, Any] = {"timeout": timeout}
+            if mcp_servers is not None:
+                stream_kwargs["mcp_servers"] = mcp_servers
+            async for chunk in prov.stream(messages, minfo, **stream_kwargs):
                 chunks.append(chunk)
                 yield chunk
 
@@ -191,6 +200,7 @@ class Conversation:
             provider=self._provider_name,
             model=self._model_id,
             config=self._config,
+            mcp_servers=self._mcp_servers,
         )
         # system is already baked into history — copy history directly,
         # skipping the __init__ system message injection

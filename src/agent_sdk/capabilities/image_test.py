@@ -4,7 +4,6 @@ from pathlib import Path
 
 from agent_sdk.capabilities.image import (
     _build_command,
-    _build_remove_background_command,
     _resolve_steps,
 )
 from agent_sdk.config import Config, ImageConfig, ImageTierConfig
@@ -141,8 +140,7 @@ def test_build_command_includes_steps():
     assert cmd[cmd.index("--steps") + 1] == "12"
 
 
-def test_build_command_does_not_include_transparent():
-    # transparent is handled by a separate remove-background step
+def test_build_command_does_not_include_transparent_when_false():
     cmd = _build_command(
         "test",
         width=512,
@@ -152,6 +150,19 @@ def test_build_command_does_not_include_transparent():
         steps=4,
     )
     assert "--transparent" not in cmd
+
+
+def test_build_command_includes_transparent_when_true():
+    cmd = _build_command(
+        "test",
+        width=512,
+        height=512,
+        output=Path("/tmp/out.png"),
+        model="z-image-turbo",
+        steps=4,
+        transparent=True,
+    )
+    assert "--transparent" in cmd
 
 
 # ##################################################################
@@ -170,18 +181,3 @@ def test_explicit_steps_override_in_command():
     assert cmd[cmd.index("--steps") + 1] == "99"
 
 
-# ##################################################################
-# transparent flag / remove-background tests
-
-
-def test_transparent_flag_adds_remove_background_command():
-    path = Path("/tmp/test.png")
-    rb_cmd = _build_remove_background_command(path)
-    assert rb_cmd[0] == "remove-background"
-    assert str(path) in rb_cmd
-
-
-def test_remove_background_command_has_path():
-    path = Path("/some/image/output.png")
-    rb_cmd = _build_remove_background_command(path)
-    assert rb_cmd[1] == str(path)

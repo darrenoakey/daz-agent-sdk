@@ -157,13 +157,14 @@ class ClaudeProvider:
         cwd: str | Path | None = None,
         max_turns: int = 1,
         timeout: float = 120.0,
+        mcp_servers: dict[str, Any] | None = None,
     ) -> Response | StructuredResponse:
         sdk = _import_sdk()
         if sdk is None:
             raise AgentError("claude_agent_sdk not installed", kind=ErrorKind.NOT_AVAILABLE)
 
         prompt = _build_prompt(messages, schema)
-        options = _build_options(sdk, model, tools, cwd, max_turns, self._permission_mode)
+        options = _build_options(sdk, model, tools, cwd, max_turns, self._permission_mode, mcp_servers)
 
         saved = _strip_claudecode()
         try:
@@ -209,13 +210,14 @@ class ClaudeProvider:
         model: ModelInfo,
         *,
         timeout: float = 120.0,
+        mcp_servers: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         sdk = _import_sdk()
         if sdk is None:
             raise AgentError("claude_agent_sdk not installed", kind=ErrorKind.NOT_AVAILABLE)
 
         prompt = _build_prompt(messages, schema=None)
-        options = _build_options(sdk, model, None, None, 1, self._permission_mode)
+        options = _build_options(sdk, model, None, None, 1, self._permission_mode, mcp_servers)
 
         saved = _strip_claudecode()
         try:
@@ -276,6 +278,7 @@ def _build_options(
     cwd: str | Path | None,
     max_turns: int,
     permission_mode: str,
+    mcp_servers: dict[str, Any] | None = None,
 ) -> Any:
     kwargs: dict[str, Any] = {
         "permission_mode": permission_mode,
@@ -286,6 +289,8 @@ def _build_options(
         kwargs["cwd"] = str(cwd)
     if model.model_id != "claude-opus-4-6":
         kwargs["model"] = model.model_id
+    if mcp_servers:
+        kwargs["mcp_servers"] = mcp_servers
     return sdk.ClaudeAgentOptions(**kwargs)
 
 

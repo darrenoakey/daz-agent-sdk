@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Type
+from typing import Any, Type
 
 from agent_sdk.capabilities.image import generate_image
 from agent_sdk.capabilities.stt import transcribe as _transcribe
@@ -131,6 +131,8 @@ class Agent:
     # returns a Conversation async context manager for multi-turn exchanges.
     # the name is used for logging; tier, system, provider, and model are
     # forwarded to the Conversation constructor unchanged.
+    # mcp_servers maps server names to McpStdioServerConfig-compatible dicts
+    # and is forwarded to the claude provider on each turn when set.
     def conversation(
         self,
         name: str | None = None,
@@ -139,6 +141,7 @@ class Agent:
         system: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        mcp_servers: dict[str, Any] | None = None,
     ) -> Conversation:
         return Conversation(
             name=name,
@@ -147,6 +150,7 @@ class Agent:
             provider=provider,
             model=model,
             config=self._config,
+            mcp_servers=mcp_servers,
         )
 
     # ##################################################################
