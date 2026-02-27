@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 from agent_sdk.conversation import Conversation
 from agent_sdk.core import Agent
 from agent_sdk.types import (

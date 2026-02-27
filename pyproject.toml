@@ -1,0 +1,37 @@
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-sdk"
+dynamic = ["version"]
+authors = [
+  { name="Darren Oakey", email="darren@oakey.net" },
+]
+description = "Provider-agnostic AI library with tier-based routing and automatic fallback."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "aiohttp>=3.9",
+    "setproctitle>=1.3",
+]
+
+[project.scripts]
+agent-sdk = "agent_sdk.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "agent_sdk.__version__"}

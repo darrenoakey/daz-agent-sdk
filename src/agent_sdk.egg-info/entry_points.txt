@@ -1,0 +1,2 @@
+[console_scripts]
+agent-sdk = agent_sdk.main:main
