@@ -155,9 +155,10 @@ class Agent:
 
     # ##################################################################
     # image
-    # generate an image from a text prompt using the local generate_image
-    # subprocess. width and height are required. output path is optional;
-    # a temp file is used when omitted. transparent triggers background removal.
+    # generate an image from a text prompt using Nano Banana 2 via
+    # the Gemini API. width and height are required. output path is
+    # optional; a temp file is used when omitted. transparent triggers
+    # background removal via remove-background subprocess.
     async def image(
         self,
         prompt: str,
@@ -166,15 +167,9 @@ class Agent:
         height: int,
         output: str | Path | None = None,
         tier: Tier = Tier.HIGH,
-        steps: int | None = None,
         transparent: bool = False,
-        model: str | None = None,
-        image: str | Path | None = None,
-        image_strength: float | None = None,
-        guidance: float | None = None,
-        quantize: int | None = None,
-        seed: int | None = None,
-        timeout: float = 600.0,
+        timeout: float = 120.0,
+        provider: str | None = None,
     ) -> ImageResult:
         return await generate_image(
             prompt,
@@ -182,15 +177,9 @@ class Agent:
             height=height,
             output=output,
             tier=tier,
-            steps=steps,
             transparent=transparent,
-            model=model,
-            image=image,
-            image_strength=image_strength,
-            guidance=guidance,
-            quantize=quantize,
-            seed=seed,
             timeout=timeout,
+            provider=provider,
             config=self._config,
             conversation_id=uuid.uuid4(),
         )

@@ -22,7 +22,13 @@ dependencies = [
     "pydantic>=2.0",
     "aiohttp>=3.9",
     "setproctitle>=1.3",
+    "google-genai>=1.0",
+    "keyring>=25.0",
 ]
+
+[project.optional-dependencies]
+transparent = ["torch", "torchvision", "transformers", "Pillow", "einops", "kornia", "timm"]
+mflux = ["mflux"]
 
 [project.scripts]
 daz-agent-sdk = "daz_agent_sdk.main:main"
@@ -35,3 +41,6 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "daz_agent_sdk.__version__"}
+
+[tool.pyright]
+reportMissingImports = "warning"

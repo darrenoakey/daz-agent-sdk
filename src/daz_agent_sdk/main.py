@@ -9,6 +9,24 @@ from daz_agent_sdk.types import Tier
 
 
 # ##################################################################
+# run image
+# generates an image and prints the output path
+async def _run_image(args: argparse.Namespace) -> int:
+    agent = Agent(load_config())
+    output = args.output if args.output else None
+    result = await agent.image(
+        args.prompt,
+        width=args.width,
+        height=args.height,
+        output=output,
+        transparent=args.transparent,
+        provider=args.provider,
+    )
+    print(str(result.path))
+    return 0
+
+
+# ##################################################################
 # run ask
 # executes a single-shot ask and prints the result
 async def _run_ask(args: argparse.Namespace) -> int:
@@ -53,6 +71,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Model tier (default: high)",
     )
 
+    # image
+    img_p = sub.add_parser("image", help="Generate an image from a text prompt")
+    img_p.add_argument("--prompt", required=True, help="The image prompt")
+    img_p.add_argument("--width", type=int, required=True, help="Image width")
+    img_p.add_argument("--height", type=int, required=True, help="Image height")
+    img_p.add_argument("--output", default=None, help="Output file path")
+    img_p.add_argument("--transparent", action="store_true", help="Remove background")
+    img_p.add_argument("--provider", default=None, help="Image provider (default: nano-banana-2, or 'mflux')")
+
     # models
     models_p = sub.add_parser("models", help="List available models")
     models_p.add_argument(
@@ -78,6 +105,7 @@ def main() -> int:
 
     dispatch = {
         "ask": _run_ask,
+        "image": _run_image,
         "models": _run_models,
     }
 
