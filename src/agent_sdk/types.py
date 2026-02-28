@@ -17,6 +17,7 @@ T = TypeVar("T", bound=BaseModel)
 # logical model quality tier — config maps these to concrete
 # provider:model pairs. HIGH is the default everywhere.
 class Tier(Enum):
+    VERY_HIGH = "very_high"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"

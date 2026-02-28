@@ -15,10 +15,11 @@ from agent_sdk.types import Tier
 # build a minimal Config with only image tier steps configured
 
 
-def _make_config(high: int = 8, medium: int = 4, low: int = 1) -> Config:
+def _make_config(very_high: int = 32, high: int = 16, medium: int = 8, low: int = 2) -> Config:
     image = ImageConfig(
         model="z-image-turbo",
         tiers={
+            "very_high": ImageTierConfig(steps=very_high),
             "high": ImageTierConfig(steps=high),
             "medium": ImageTierConfig(steps=medium),
             "low": ImageTierConfig(steps=low),
@@ -32,19 +33,24 @@ def _make_config(high: int = 8, medium: int = 4, low: int = 1) -> Config:
 # step resolution tests
 
 
+def test_resolve_steps_very_high_tier():
+    cfg = _make_config(very_high=32)
+    assert _resolve_steps(Tier.VERY_HIGH, None, cfg) == 32
+
+
 def test_resolve_steps_high_tier():
-    cfg = _make_config(high=8)
-    assert _resolve_steps(Tier.HIGH, None, cfg) == 8
+    cfg = _make_config(high=16)
+    assert _resolve_steps(Tier.HIGH, None, cfg) == 16
 
 
 def test_resolve_steps_medium_tier():
-    cfg = _make_config(medium=4)
-    assert _resolve_steps(Tier.MEDIUM, None, cfg) == 4
+    cfg = _make_config(medium=8)
+    assert _resolve_steps(Tier.MEDIUM, None, cfg) == 8
 
 
 def test_resolve_steps_low_tier():
-    cfg = _make_config(low=1)
-    assert _resolve_steps(Tier.LOW, None, cfg) == 1
+    cfg = _make_config(low=2)
+    assert _resolve_steps(Tier.LOW, None, cfg) == 2
 
 
 def test_resolve_steps_explicit_override():
@@ -150,6 +156,90 @@ def test_build_command_does_not_include_transparent_when_false():
         steps=4,
     )
     assert "--transparent" not in cmd
+
+
+def test_build_command_includes_source_image():
+    cmd = _build_command(
+        "enhance this",
+        width=512,
+        height=512,
+        output=Path("/tmp/out.jpg"),
+        model="z-image-turbo",
+        steps=4,
+        image=Path("/tmp/source.jpg"),
+    )
+    assert "--image" in cmd
+    assert cmd[cmd.index("--image") + 1] == "/tmp/source.jpg"
+
+
+def test_build_command_includes_image_strength():
+    cmd = _build_command(
+        "enhance this",
+        width=512,
+        height=512,
+        output=Path("/tmp/out.jpg"),
+        model="z-image-turbo",
+        steps=4,
+        image=Path("/tmp/source.jpg"),
+        image_strength=0.7,
+    )
+    assert "--image-strength" in cmd
+    assert cmd[cmd.index("--image-strength") + 1] == "0.7"
+
+
+def test_build_command_includes_guidance():
+    cmd = _build_command(
+        "test",
+        width=512,
+        height=512,
+        output=Path("/tmp/out.jpg"),
+        model="z-image-turbo",
+        steps=4,
+        guidance=7.5,
+    )
+    assert "--guidance" in cmd
+    assert cmd[cmd.index("--guidance") + 1] == "7.5"
+
+
+def test_build_command_includes_quantize():
+    cmd = _build_command(
+        "test",
+        width=512,
+        height=512,
+        output=Path("/tmp/out.jpg"),
+        model="z-image-turbo",
+        steps=4,
+        quantize=4,
+    )
+    assert "--quantize" in cmd
+    assert cmd[cmd.index("--quantize") + 1] == "4"
+
+
+def test_build_command_includes_seed():
+    cmd = _build_command(
+        "test",
+        width=512,
+        height=512,
+        output=Path("/tmp/out.jpg"),
+        model="z-image-turbo",
+        steps=4,
+        seed=42,
+    )
+    assert "--seed" in cmd
+    assert cmd[cmd.index("--seed") + 1] == "42"
+
+
+def test_build_command_no_image_by_default():
+    cmd = _build_command(
+        "test",
+        width=512,
+        height=512,
+        output=Path("/tmp/out.jpg"),
+        model="z-image-turbo",
+        steps=4,
+    )
+    assert "--image" not in cmd
+    assert "--image-strength" not in cmd
 
 
 def test_build_command_includes_transparent_when_true():

@@ -51,6 +51,11 @@ def _build_command(
     model: str,
     steps: int,
     transparent: bool = False,
+    image: Path | None = None,
+    image_strength: float | None = None,
+    guidance: float | None = None,
+    quantize: int | None = None,
+    seed: int | None = None,
 ) -> list[str]:
     cmd = [
         "generate_image",
@@ -63,6 +68,16 @@ def _build_command(
     ]
     if transparent:
         cmd.append("--transparent")
+    if image is not None:
+        cmd.extend(["--image", str(image)])
+    if image_strength is not None:
+        cmd.extend(["--image-strength", str(image_strength)])
+    if guidance is not None:
+        cmd.extend(["--guidance", str(guidance)])
+    if quantize is not None:
+        cmd.extend(["--quantize", str(quantize)])
+    if seed is not None:
+        cmd.extend(["--seed", str(seed)])
     return cmd
 
 
@@ -120,6 +135,11 @@ async def generate_image(
     steps: int | None = None,
     transparent: bool = False,
     model: str | None = None,
+    image: str | Path | None = None,
+    image_strength: float | None = None,
+    guidance: float | None = None,
+    quantize: int | None = None,
+    seed: int | None = None,
     timeout: float = 600.0,
     config: Config | None = None,
     logger: ConversationLogger | None = None,
@@ -163,6 +183,11 @@ async def generate_image(
         model=resolved_model,
         steps=resolved_steps,
         transparent=transparent,
+        image=Path(image) if image is not None else None,
+        image_strength=image_strength,
+        guidance=guidance,
+        quantize=quantize,
+        seed=seed,
     )
 
     await _run_subprocess(cmd, timeout=timeout, label="generate_image")

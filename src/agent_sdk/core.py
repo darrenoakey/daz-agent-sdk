@@ -169,6 +169,11 @@ class Agent:
         steps: int | None = None,
         transparent: bool = False,
         model: str | None = None,
+        image: str | Path | None = None,
+        image_strength: float | None = None,
+        guidance: float | None = None,
+        quantize: int | None = None,
+        seed: int | None = None,
         timeout: float = 600.0,
     ) -> ImageResult:
         return await generate_image(
@@ -180,6 +185,11 @@ class Agent:
             steps=steps,
             transparent=transparent,
             model=model,
+            image=image,
+            image_strength=image_strength,
+            guidance=guidance,
+            quantize=quantize,
+            seed=seed,
             timeout=timeout,
             config=self._config,
             conversation_id=uuid.uuid4(),

@@ -47,9 +47,10 @@ class ImageConfig:
     # fill default tier step counts if not provided
     def __post_init__(self) -> None:
         defaults = {
-            "high": ImageTierConfig(steps=8),
-            "medium": ImageTierConfig(steps=4),
-            "low": ImageTierConfig(steps=1),
+            "very_high": ImageTierConfig(steps=32),
+            "high": ImageTierConfig(steps=16),
+            "medium": ImageTierConfig(steps=8),
+            "low": ImageTierConfig(steps=2),
         }
         for tier_key, default in defaults.items():
             if tier_key not in self.tiers:
@@ -140,6 +141,11 @@ class Config:
     # fill default tier chains if not provided by config file
     def __post_init__(self) -> None:
         defaults: dict[str, list[str]] = {
+            "very_high": [
+                "claude:claude-opus-4-6",
+                "codex:gpt-5.3-codex",
+                "gemini:gemini-2.5-pro",
+            ],
             "high": [
                 "claude:claude-opus-4-6",
                 "codex:gpt-5.3-codex",

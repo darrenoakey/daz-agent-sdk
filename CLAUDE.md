@@ -35,7 +35,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 | Capability | Module |
 |------------|--------|
-| Image | `capabilities/image.py` — subprocess to `generate_image` + `remove-background` |
+| Image | `capabilities/image.py` — subprocess to `generate_image` (--transparent flag for background removal) |
 | TTS | `capabilities/tts.py` — subprocess to `tts` |
 | STT | `capabilities/stt.py` — subprocess to `whisper` |
 
@@ -46,3 +46,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - `google.genai` import needs `# type: ignore[attr-defined]` for pyright
 - Test fakes for Provider must use async generators (with yield), not async functions returning iterators
 - Config defaults have no vllm — removed by design
+- Conversation accepts `mcp_servers` for MCP tool integration (passed through to Claude provider)
+- Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
+- `./run install` command installs editable package system-wide
+- 15 projects converted from claude_agent_sdk/dazllm to agent-sdk (see AI_USAGE_INVENTORY.md for full list)

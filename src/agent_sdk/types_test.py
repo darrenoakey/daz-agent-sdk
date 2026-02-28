@@ -26,6 +26,7 @@ from pathlib import Path
 # tier values
 # verify all five tiers have the expected string values
 def test_tier_values() -> None:
+    assert Tier.VERY_HIGH.value == "very_high"
     assert Tier.HIGH.value == "high"
     assert Tier.MEDIUM.value == "medium"
     assert Tier.LOW.value == "low"
