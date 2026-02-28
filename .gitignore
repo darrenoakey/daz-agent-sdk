@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 ~
 src/agent_sdk.egg-info/
+src/daz_agent_sdk.egg-info/
