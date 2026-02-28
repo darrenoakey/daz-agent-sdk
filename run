@@ -25,6 +25,65 @@ else:
         ).returncode
         sys.exit(rc)
 
+    # deploy: bump version, build, upload to PyPI, install globally from PyPI
+    if len(sys.argv) > 1 and sys.argv[1] == "deploy":
+        import re
+        import keyring  # type: ignore[import-untyped]
+
+        version_file = SCRIPT_DIR / "src" / "daz_agent_sdk" / "__init__.py"
+        text = version_file.read_text()
+        m = re.search(r'^__version__ = ["\'](\d+)\.(\d+)\.(\d+)["\']', text, re.M)
+        if not m:
+            print("ERROR: version not found in __init__.py")
+            sys.exit(1)
+        maj, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        new_ver = f"{maj}.{minor}.{patch + 1}"
+        text = re.sub(
+            r'^(__version__ = ["\'])\d+\.\d+\.\d+(["\'])',
+            rf"\g<1>{new_ver}\g<2>",
+            text,
+            flags=re.M,
+        )
+        version_file.write_text(text)
+        print(f"Version bumped to {new_ver}")
+
+        # build
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "build", "twine"], check=True)
+        for d in (SCRIPT_DIR / "dist", SCRIPT_DIR / "build"):
+            if d.exists():
+                import shutil
+                shutil.rmtree(d)
+        subprocess.run([sys.executable, "-m", "build"], cwd=str(SCRIPT_DIR), check=True)
+
+        # upload to PyPI
+        token = keyring.get_password("pypi", "api_token")
+        if not token:
+            print("ERROR: No PyPI token in keyring (service='pypi', user='api_token')")
+            print("Add it with: python -m keyring set pypi api_token")
+            sys.exit(1)
+        env = os.environ.copy()
+        env["TWINE_USERNAME"] = "__token__"
+        env["TWINE_PASSWORD"] = token
+        import glob
+        dist_files = glob.glob(str(SCRIPT_DIR / "dist" / "*"))
+        subprocess.run(
+            [sys.executable, "-m", "twine", "upload"] + dist_files,
+            env=env,
+            check=True,
+        )
+        print(f"Published daz-agent-sdk {new_ver} to PyPI")
+
+        # install globally from PyPI
+        import time
+        print("Waiting for PyPI to index the new version...")
+        time.sleep(30)
+        subprocess.run(
+            ["pip", "install", "--upgrade", f"daz-agent-sdk=={new_ver}"],
+            check=False,
+        )
+        print(f"Installed daz-agent-sdk {new_ver} globally")
+        sys.exit(0)
+
     sys.path.insert(0, str(SCRIPT_DIR / "src"))
     from daz_agent_sdk.main import main
     sys.exit(main())
