@@ -4,7 +4,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-sdk"
+name = "daz-agent-sdk"
 dynamic = ["version"]
 authors = [
   { name="Darren Oakey", email="darren@oakey.net" },
@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-sdk = "agent_sdk.main:main"
+daz-agent-sdk = "daz_agent_sdk.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -34,4 +34,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.dynamic]
-version = {attr = "agent_sdk.__version__"}
+version = {attr = "daz_agent_sdk.__version__"}

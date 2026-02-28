@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from agent_sdk.types import (
+from daz_agent_sdk.types import (
     AgentError,
     AudioResult,
     Capability,

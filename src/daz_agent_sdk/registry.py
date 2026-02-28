@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import importlib
-from agent_sdk.config import Config, get_tier_chain
-from agent_sdk.providers.base import Provider
-from agent_sdk.types import Capability, ModelInfo, Tier
+from daz_agent_sdk.config import Config, get_tier_chain
+from daz_agent_sdk.providers.base import Provider
+from daz_agent_sdk.types import Capability, ModelInfo, Tier
 
 
 # ##################################################################
 # known providers
 # list of provider names and their module paths for lazy import
 _PROVIDER_MODULES: dict[str, str] = {
-    "claude": "agent_sdk.providers.claude",
-    "ollama": "agent_sdk.providers.ollama",
-    "gemini": "agent_sdk.providers.gemini",
-    "codex": "agent_sdk.providers.codex",
+    "claude": "daz_agent_sdk.providers.claude",
+    "ollama": "daz_agent_sdk.providers.ollama",
+    "gemini": "daz_agent_sdk.providers.gemini",
+    "codex": "daz_agent_sdk.providers.codex",
 }
 
 # ##################################################################

@@ -6,9 +6,9 @@ import uuid
 from pathlib import Path
 from uuid import UUID
 
-from agent_sdk.config import Config, get_image_steps, load_config
-from agent_sdk.logging_ import ConversationLogger
-from agent_sdk.types import AgentError, Capability, ErrorKind, ImageResult, ModelInfo, Tier
+from daz_agent_sdk.config import Config, get_image_steps, load_config
+from daz_agent_sdk.logging_ import ConversationLogger
+from daz_agent_sdk.types import AgentError, Capability, ErrorKind, ImageResult, ModelInfo, Tier
 
 
 # ##################################################################

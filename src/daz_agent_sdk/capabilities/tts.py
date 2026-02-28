@@ -6,8 +6,8 @@ import uuid
 from pathlib import Path
 from uuid import UUID
 
-from agent_sdk.logging_ import ConversationLogger
-from agent_sdk.types import AgentError, AudioResult, Capability, ErrorKind, ModelInfo, Tier
+from daz_agent_sdk.logging_ import ConversationLogger
+from daz_agent_sdk.types import AgentError, AudioResult, Capability, ErrorKind, ModelInfo, Tier
 
 
 # ##################################################################

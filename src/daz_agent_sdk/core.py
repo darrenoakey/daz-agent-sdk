@@ -4,14 +4,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Type
 
-from agent_sdk.capabilities.image import generate_image
-from agent_sdk.capabilities.stt import transcribe as _transcribe
-from agent_sdk.capabilities.tts import synthesize_speech
-from agent_sdk.config import Config, get_tier_chain, load_config
-from agent_sdk.conversation import Conversation
-from agent_sdk.fallback import execute_with_fallback
-from agent_sdk.registry import get_models_for_tier, get_provider, resolve_model
-from agent_sdk.types import (
+from daz_agent_sdk.capabilities.image import generate_image
+from daz_agent_sdk.capabilities.stt import transcribe as _transcribe
+from daz_agent_sdk.capabilities.tts import synthesize_speech
+from daz_agent_sdk.config import Config, get_tier_chain, load_config
+from daz_agent_sdk.conversation import Conversation
+from daz_agent_sdk.fallback import execute_with_fallback
+from daz_agent_sdk.registry import get_models_for_tier, get_provider, resolve_model
+from daz_agent_sdk.types import (
     AgentError,
     AudioResult,
     Capability,

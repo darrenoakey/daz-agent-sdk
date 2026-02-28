@@ -1,4 +1,4 @@
-# agent-sdk
+# daz-agent-sdk
 
 Provider-agnostic AI library with tier-based routing and automatic fallback.
 
@@ -6,14 +6,14 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 - **Run tests**: `.venv/bin/python -m pytest src/ -v --tb=short`
 - **Lint**: `.venv/bin/ruff check src/`
-- **Type check**: `.venv/bin/pyright src/agent_sdk/`
+- **Type check**: `.venv/bin/pyright src/daz_agent_sdk/`
 - **CLI**: `.venv/bin/python run --help`
 - **All three gates must pass before commit**: pytest, ruff, pyright
 
 ## Architecture
 
 - `types.py` — Tier, Capability, ErrorKind, ModelInfo, Message, Response, AgentError
-- `config.py` — YAML config loader from `~/.agent-sdk/config.yaml`, sensible defaults
+- `config.py` — YAML config loader from `~/.daz-agent-sdk/config.yaml`, sensible defaults
 - `registry.py` — lazy provider loading, model resolution, tier chain mapping
 - `fallback.py` — error classification + single-shot cascade / conversation backoff+cascade
 - `logging_.py` — per-conversation UUID JSONL event logger
@@ -49,4 +49,4 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Conversation accepts `mcp_servers` for MCP tool integration (passed through to Claude provider)
 - Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
 - `./run install` command installs editable package system-wide
-- 15 projects converted from claude_agent_sdk/dazllm to agent-sdk (see AI_USAGE_INVENTORY.md for full list)
+- 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)

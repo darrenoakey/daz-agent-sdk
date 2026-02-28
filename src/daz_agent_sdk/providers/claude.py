@@ -8,7 +8,7 @@ from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel
 
-from agent_sdk.types import (
+from daz_agent_sdk.types import (
     AgentError,
     Capability,
     ErrorKind,

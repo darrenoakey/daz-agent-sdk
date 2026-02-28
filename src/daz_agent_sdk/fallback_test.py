@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from agent_sdk.fallback import classify_error, execute_with_fallback
-from agent_sdk.types import AgentError, ErrorKind
+from daz_agent_sdk.fallback import classify_error, execute_with_fallback
+from daz_agent_sdk.types import AgentError, ErrorKind
 
 
 # ##################################################################
@@ -262,7 +262,7 @@ async def test_conversation_backoff_first_attempt_no_delay():
 
 @pytest.mark.asyncio
 async def test_conversation_backoff_respects_max():
-    from agent_sdk.config import Config, FallbackConfig, FallbackConversationConfig, FallbackSingleShotConfig
+    from daz_agent_sdk.config import Config, FallbackConfig, FallbackConversationConfig, FallbackSingleShotConfig
 
     cfg = Config(
         fallback=FallbackConfig(

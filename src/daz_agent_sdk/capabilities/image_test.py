@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sdk.capabilities.image import (
+from daz_agent_sdk.capabilities.image import (
     _build_command,
     _resolve_steps,
 )
-from agent_sdk.config import Config, ImageConfig, ImageTierConfig
-from agent_sdk.types import Tier
+from daz_agent_sdk.config import Config, ImageConfig, ImageTierConfig
+from daz_agent_sdk.types import Tier
 
 
 # ##################################################################

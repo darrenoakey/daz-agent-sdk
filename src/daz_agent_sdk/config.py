@@ -6,11 +6,11 @@ from typing import Any
 
 import yaml
 
-from agent_sdk.types import Tier
+from daz_agent_sdk.types import Tier
 
 
 # default config path
-_CONFIG_PATH = Path.home() / ".agent-sdk" / "config.yaml"
+_CONFIG_PATH = Path.home() / ".daz-agent-sdk" / "config.yaml"
 
 # module-level cache — loaded once per process
 _config_cache: Config | None = None
@@ -91,7 +91,7 @@ class TtsConfig:
 # directory, level and retention for conversation logs
 @dataclass
 class LoggingConfig:
-    directory: str = "~/.agent-sdk/logs"
+    directory: str = "~/.daz-agent-sdk/logs"
     level: str = "info"
     retention_days: int = 30
 
@@ -125,7 +125,7 @@ class FallbackConfig:
 
 # ##################################################################
 # config
-# top-level configuration object loaded from ~/.agent-sdk/config.yaml
+# top-level configuration object loaded from ~/.daz-agent-sdk/config.yaml
 # all fields have sensible defaults so no config file is required
 @dataclass
 class Config:
@@ -271,7 +271,7 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
     # logging
     raw_logging = raw.get("logging") or {}
     logging_cfg = LoggingConfig(
-        directory=raw_logging.get("directory", "~/.agent-sdk/logs") if isinstance(raw_logging, dict) else "~/.agent-sdk/logs",
+        directory=raw_logging.get("directory", "~/.daz-agent-sdk/logs") if isinstance(raw_logging, dict) else "~/.daz-agent-sdk/logs",
         level=raw_logging.get("level", "info") if isinstance(raw_logging, dict) else "info",
         retention_days=raw_logging.get("retention_days", 30) if isinstance(raw_logging, dict) else 30,
     )
@@ -292,7 +292,7 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
 
 # ##################################################################
 # load config
-# reads ~/.agent-sdk/config.yaml if it exists, otherwise uses defaults
+# reads ~/.daz-agent-sdk/config.yaml if it exists, otherwise uses defaults
 # result is cached at module level for the lifetime of the process
 def load_config(config_path: Path | None = None, *, force_reload: bool = False) -> Config:
     global _config_cache

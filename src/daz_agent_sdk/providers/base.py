@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncIterator, Type
 
-from agent_sdk.types import ImageResult, Message, ModelInfo, Response, StructuredResponse, T
+from daz_agent_sdk.types import ImageResult, Message, ModelInfo, Response, StructuredResponse, T
 
 
 # ##################################################################

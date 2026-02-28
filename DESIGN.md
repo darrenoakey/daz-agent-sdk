@@ -1,4 +1,4 @@
-# agent-sdk Design Document
+# daz-agent-sdk Design Document
 
 ## Philosophy
 
@@ -6,7 +6,7 @@ One library. Every AI capability. Provider-agnostic. The caller says **what** th
 (tier + capability), never **which** provider — unless they want to.
 
 ```python
-from agent_sdk import agent
+from daz_agent_sdk import agent
 
 # simplest possible call
 answer = await agent.ask("Summarise this text", text=doc)
@@ -33,13 +33,13 @@ audio = await agent.speak("Welcome to the show", voice="gary")
 ## Package Layout
 
 ```
-agent-sdk/
+daz-agent-sdk/
 ├── src/
-│   └── agent_sdk/
+│   └── daz_agent_sdk/
 │       ├── __init__.py          # public API: agent, Conversation, Tier, etc.
 │       ├── core.py              # Agent singleton, top-level ask/image/speak/conversation
 │       ├── conversation.py      # Conversation class (context manager)
-│       ├── config.py            # ~/.agent-sdk/ loader + defaults
+│       ├── config.py            # ~/.daz-agent-sdk/ loader + defaults
 │       ├── registry.py          # provider/model registry + tier mapping
 │       ├── fallback.py          # retry, backoff, provider cascade
 │       ├── logging_.py          # per-conversation GUID logging + tracing
@@ -59,7 +59,7 @@ agent-sdk/
 │           └── stt.py           # speech-to-text (Whisper, etc.)
 ├── run                          # facade script (venv, pip install, delegate)
 ├── requirements.txt
-└── src/agent_sdk_test.py        # co-located tests
+└── src/daz_agent_sdk_test.py        # co-located tests
 ```
 
 ---
@@ -164,10 +164,10 @@ class AudioResult:
 
 ---
 
-## Configuration: ~/.agent-sdk/
+## Configuration: ~/.daz-agent-sdk/
 
 ```yaml
-# ~/.agent-sdk/config.yaml
+# ~/.daz-agent-sdk/config.yaml
 # Everything here is optional. Sensible defaults apply.
 
 # Map tiers to ordered provider:model lists (first = preferred, rest = fallbacks)
@@ -229,7 +229,7 @@ tts:
 
 # Logging
 logging:
-  directory: ~/.agent-sdk/logs        # {conversation_id}/ subdirectories
+  directory: ~/.daz-agent-sdk/logs        # {conversation_id}/ subdirectories
   level: info                         # debug for full request/response bodies
   retention_days: 30
 
@@ -252,9 +252,9 @@ fallback:
 ### agent — Module-Level Singleton
 
 ```python
-# src/agent_sdk/__init__.py
+# src/daz_agent_sdk/__init__.py
 
-from agent_sdk.core import Agent
+from daz_agent_sdk.core import Agent
 
 # Module-level singleton — ready to use on import
 agent = Agent()
@@ -293,7 +293,7 @@ async def ask(
 **Usage:**
 
 ```python
-from agent_sdk import agent, Tier
+from daz_agent_sdk import agent, Tier
 from pydantic import BaseModel
 
 # plain text — defaults to Tier.HIGH (best available model)
@@ -610,10 +610,10 @@ class ErrorKind(Enum):
 
 ## Logging and Tracing
 
-Every conversation gets a UUID. All interactions are logged to `~/.agent-sdk/logs/{uuid}/`.
+Every conversation gets a UUID. All interactions are logged to `~/.daz-agent-sdk/logs/{uuid}/`.
 
 ```
-~/.agent-sdk/logs/
+~/.daz-agent-sdk/logs/
   a1b2c3d4-.../
     meta.json          # { name, tier, provider, model, created_at, ... }
     events.jsonl       # append-only event log
@@ -651,7 +651,7 @@ async with agent.conversation("my-task") as chat:
 ### Example 1: What most projects will look like (noveliser2-style)
 
 ```python
-from agent_sdk import agent, Tier
+from daz_agent_sdk import agent, Tier
 from pydantic import BaseModel
 
 
@@ -693,7 +693,7 @@ async def write_novel(premise: str) -> None:
 ### Example 2: Conversational agent (claude_server-style)
 
 ```python
-from agent_sdk import agent, Tier
+from daz_agent_sdk import agent, Tier
 
 
 async def handle_user_session(user_messages):
@@ -718,7 +718,7 @@ async def handle_user_session(user_messages):
 ### Example 3: Cheap local classification (beezle-style)
 
 ```python
-from agent_sdk import agent, Tier
+from daz_agent_sdk import agent, Tier
 from pydantic import BaseModel
 
 
@@ -740,7 +740,7 @@ async def classify_alert(alert_text: str) -> AlertClassification:
 ### Example 4: Multi-modal pipeline (auto-blog-style)
 
 ```python
-from agent_sdk import agent, Tier
+from daz_agent_sdk import agent, Tier
 
 
 async def create_podcast_episode(topic: str):
@@ -770,7 +770,7 @@ async def create_podcast_episode(topic: str):
 ### Example 5: Enumerating models
 
 ```python
-from agent_sdk import agent, Tier, Capability
+from daz_agent_sdk import agent, Tier, Capability
 
 # What's available right now?
 all_models = await agent.models()
@@ -811,7 +811,7 @@ After:
 
 ```python
 # NEW: 1 line
-from agent_sdk import agent
+from daz_agent_sdk import agent
 answer = await agent.ask(prompt)
 ```
 
@@ -843,9 +843,9 @@ result = await agent.image(prompt, width=1024, height=1024, output=path)
 - `aiohttp` — HTTP client for Ollama/vLLM
 
 **Optional (installed on first use or via extras):**
-- `claude-agent-sdk` — Claude provider (`pip install agent-sdk[claude]`)
-- `openai-codex-sdk` — Codex provider (`pip install agent-sdk[codex]`)
-- `google-genai` — Gemini provider (`pip install agent-sdk[gemini]`)
+- `claude-agent-sdk` — Claude provider (`pip install daz-agent-sdk[claude]`)
+- `openai-codex-sdk` — Codex provider (`pip install daz-agent-sdk[codex]`)
+- `google-genai` — Gemini provider (`pip install daz-agent-sdk[gemini]`)
 
 **Not dependencies (external tools, already installed):**
 - `~/bin/generate_image` — mflux image generation

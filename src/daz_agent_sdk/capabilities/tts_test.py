@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sdk.capabilities.tts import (
+from daz_agent_sdk.capabilities.tts import (
     _DEFAULT_VOICE,
     _build_tts_command,
     _make_temp_output,

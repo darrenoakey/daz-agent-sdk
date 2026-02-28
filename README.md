@@ -1,18 +1,18 @@
 ![](banner.jpg)
 
-# agent-sdk
+# daz-agent-sdk
 
 **One library for all your AI needs.** Text, images, speech — from any provider, with automatic fallback if one goes down.
 
 Stop writing boilerplate. Stop worrying about rate limits. Just tell it what you need.
 
 ```python
-from agent_sdk import agent
+from daz_agent_sdk import agent
 
 answer = await agent.ask("Explain quantum tunnelling in one paragraph")
 ```
 
-That's it. Behind the scenes, agent-sdk picks the best available model, handles errors, and falls back to another provider if anything goes wrong. You never write retry logic again.
+That's it. Behind the scenes, daz-agent-sdk picks the best available model, handles errors, and falls back to another provider if anything goes wrong. You never write retry logic again.
 
 ---
 
@@ -20,11 +20,11 @@ That's it. Behind the scenes, agent-sdk picks the best available model, handles 
 
 ```bash
 # Clone and install
-git clone <repo-url> && cd agent-sdk
+git clone <repo-url> && cd daz-agent-sdk
 ./run install
 ```
 
-This installs agent-sdk as an editable package so you can `import agent_sdk` from anywhere.
+This installs daz-agent-sdk as an editable package so you can `import daz_agent_sdk` from anywhere.
 
 **Quick test from the command line:**
 
@@ -35,7 +35,7 @@ This installs agent-sdk as an editable package so you can `import agent_sdk` fro
 **Or in Python:**
 
 ```python
-from agent_sdk import agent
+from daz_agent_sdk import agent
 
 answer = await agent.ask("What's the capital of France?")
 print(answer.text)
@@ -99,7 +99,7 @@ async with agent.conversation("writing-session") as chat:
         print(chunk, end="", flush=True)
 ```
 
-Conversations handle rate limits transparently — if your provider goes down mid-conversation, agent-sdk backs off, summarises the conversation so far, and picks up seamlessly on another provider.
+Conversations handle rate limits transparently — if your provider goes down mid-conversation, daz-agent-sdk backs off, summarises the conversation so far, and picks up seamlessly on another provider.
 
 ### Generate Images
 
@@ -160,7 +160,7 @@ fast_text = await agent.models(tier=Tier.LOW, capability=Capability.TEXT)
 
 ## Using the CLI
 
-You don't need to write Python to use agent-sdk.
+You don't need to write Python to use daz-agent-sdk.
 
 ```bash
 # Ask a question
@@ -177,9 +177,9 @@ You don't need to write Python to use agent-sdk.
 
 ## Configuration
 
-agent-sdk works with **zero configuration** — it picks sensible defaults automatically.
+daz-agent-sdk works with **zero configuration** — it picks sensible defaults automatically.
 
-If you want to customise things, create `~/.agent-sdk/config.yaml`:
+If you want to customise things, create `~/.daz-agent-sdk/config.yaml`:
 
 ```yaml
 # Map tiers to your preferred providers
@@ -217,7 +217,7 @@ Each tier lists providers in order of preference. If the first one fails, it tri
 | **Gemini** | Google AI API key |
 | **Ollama** | Ollama running locally (`ollama serve`) |
 
-Don't have all of them? No problem. agent-sdk skips any provider that isn't available and uses what you've got.
+Don't have all of them? No problem. daz-agent-sdk skips any provider that isn't available and uses what you've got.
 
 ---
 
@@ -225,7 +225,7 @@ Don't have all of them? No problem. agent-sdk skips any provider that isn't avai
 
 This is the killer feature. You never write retry logic.
 
-**For single questions:** If your preferred provider hits a rate limit, agent-sdk immediately tries the next one. No delay, no waiting.
+**For single questions:** If your preferred provider hits a rate limit, daz-agent-sdk immediately tries the next one. No delay, no waiting.
 
 **For conversations:** It tries exponential backoff first (maybe the rate limit clears in a few seconds). If that doesn't work, it summarises the conversation and seamlessly continues on another provider. Your code never knows the switch happened.
 
@@ -235,7 +235,7 @@ This is the killer feature. You never write retry logic.
 
 ## Logging
 
-Every conversation is automatically logged to `~/.agent-sdk/logs/`. Each conversation gets its own folder with:
+Every conversation is automatically logged to `~/.daz-agent-sdk/logs/`. Each conversation gets its own folder with:
 
 - What was said
 - Which models were used
@@ -271,4 +271,4 @@ async with agent.conversation("brainstorm") as chat:
 
 **Use `FREE_FAST` for bulk work.** Processing hundreds of items? Local models cost nothing and won't rate-limit you.
 
-**Let the fallback do its job.** Don't try to handle provider errors yourself. That's what agent-sdk is for.
+**Let the fallback do its job.** Don't try to handle provider errors yourself. That's what daz-agent-sdk is for.

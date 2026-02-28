@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from agent_sdk.logging_ import ConversationLogger
+from daz_agent_sdk.logging_ import ConversationLogger
 
 
 # ##################################################################

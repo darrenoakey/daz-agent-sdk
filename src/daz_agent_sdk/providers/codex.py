@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Type
 from uuid import uuid4
 
-from agent_sdk.providers.base import Provider
-from agent_sdk.types import (
+from daz_agent_sdk.providers.base import Provider
+from daz_agent_sdk.types import (
     AgentError,
     Capability,
     ErrorKind,

@@ -5,8 +5,8 @@ import socket
 import pytest
 import pytest_asyncio  # noqa: F401 — registers asyncio mode
 
-from agent_sdk.providers.ollama import OllamaProvider, _tier_from_param_size
-from agent_sdk.types import (
+from daz_agent_sdk.providers.ollama import OllamaProvider, _tier_from_param_size
+from daz_agent_sdk.types import (
     Capability,
     ErrorKind,
     Message,

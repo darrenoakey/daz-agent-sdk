@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Coroutine, Protocol
 
-from agent_sdk.config import Config
-from agent_sdk.types import AgentError, ErrorKind
+from daz_agent_sdk.config import Config
+from daz_agent_sdk.types import AgentError, ErrorKind
 
 
 # ##################################################################
@@ -136,7 +136,7 @@ async def execute_with_fallback(
     config: Config | None = None,
     logger: EventLogger | None = None,
 ) -> Any:
-    from agent_sdk.config import load_config
+    from daz_agent_sdk.config import load_config
 
     cfg = config or load_config()
     max_backoff = cfg.fallback.conversation.max_backoff_seconds

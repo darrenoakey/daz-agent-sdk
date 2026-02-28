@@ -19,12 +19,12 @@ if Path(sys.executable).resolve() != PYTHON.resolve():
 else:
     # handle install command before importing main (no deps needed)
     if len(sys.argv) > 1 and sys.argv[1] == "install":
-        print("Installing agent-sdk as editable package (system-wide)...")
+        print("Installing daz-agent-sdk as editable package (system-wide)...")
         rc = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", str(SCRIPT_DIR)],
         ).returncode
         sys.exit(rc)
 
     sys.path.insert(0, str(SCRIPT_DIR / "src"))
-    from agent_sdk.main import main
+    from daz_agent_sdk.main import main
     sys.exit(main())

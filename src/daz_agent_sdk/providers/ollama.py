@@ -7,8 +7,8 @@ from uuid import uuid4
 
 import aiohttp
 
-from agent_sdk.providers.base import Provider
-from agent_sdk.types import (
+from daz_agent_sdk.providers.base import Provider
+from daz_agent_sdk.types import (
     AgentError,
     Capability,
     ErrorKind,

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import yaml
 
-from agent_sdk.types import Tier
-from agent_sdk.config import (
+from daz_agent_sdk.types import Tier
+from daz_agent_sdk.config import (
     Config,
     get_image_steps,
     get_provider_config,

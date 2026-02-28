@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sdk.types import (
+from daz_agent_sdk.types import (
     ErrorKind,
     Message,
     ModelInfo,
@@ -10,7 +10,7 @@ from agent_sdk.types import (
     StructuredResponse,
     Tier,
 )
-from agent_sdk.providers.claude import ClaudeProvider, _classify_error, _build_prompt
+from daz_agent_sdk.providers.claude import ClaudeProvider, _classify_error, _build_prompt
 
 
 # ##################################################################

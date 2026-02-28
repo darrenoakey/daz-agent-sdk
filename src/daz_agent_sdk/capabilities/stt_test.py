@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from agent_sdk.capabilities.stt import (
+from daz_agent_sdk.capabilities.stt import (
     _DEFAULT_MODEL_SIZE,
     _LOCAL_STT_MODEL,
     _build_stt_command,
 )
-from agent_sdk.types import AgentError, Capability
+from daz_agent_sdk.types import AgentError, Capability
 
 
 # ##################################################################
@@ -67,7 +67,7 @@ def test_local_stt_model_provider() -> None:
 # verify that transcribe raises on missing audio file
 @pytest.mark.asyncio
 async def test_transcribe_missing_file_raises(tmp_path: Path) -> None:
-    from agent_sdk.capabilities.stt import transcribe
+    from daz_agent_sdk.capabilities.stt import transcribe
     missing = tmp_path / "nonexistent.wav"
     with pytest.raises(AgentError) as exc_info:
         await transcribe(missing)

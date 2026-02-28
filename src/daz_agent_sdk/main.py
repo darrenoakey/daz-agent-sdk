@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from agent_sdk.config import load_config
-from agent_sdk.core import Agent
-from agent_sdk.types import Tier
+from daz_agent_sdk.config import load_config
+from daz_agent_sdk.core import Agent
+from daz_agent_sdk.types import Tier
 
 
 # ##################################################################

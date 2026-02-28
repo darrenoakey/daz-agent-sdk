@@ -4,12 +4,12 @@ import copy
 from typing import Any, AsyncIterator, Type
 from uuid import UUID, uuid4
 
-from agent_sdk.config import Config, get_tier_chain, load_config
-from agent_sdk.fallback import execute_with_fallback
-from agent_sdk.logging_ import ConversationLogger
-from agent_sdk.providers.base import Provider
-from agent_sdk.registry import get_provider, resolve_model
-from agent_sdk.types import Message, ModelInfo, Response, StructuredResponse, T, Tier
+from daz_agent_sdk.config import Config, get_tier_chain, load_config
+from daz_agent_sdk.fallback import execute_with_fallback
+from daz_agent_sdk.logging_ import ConversationLogger
+from daz_agent_sdk.providers.base import Provider
+from daz_agent_sdk.registry import get_provider, resolve_model
+from daz_agent_sdk.types import Message, ModelInfo, Response, StructuredResponse, T, Tier
 
 
 # ##################################################################

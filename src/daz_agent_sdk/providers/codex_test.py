@@ -5,13 +5,13 @@ import os
 import pytest
 import pytest_asyncio  # noqa: F401 — registers asyncio mode
 
-from agent_sdk.providers.codex import (
+from daz_agent_sdk.providers.codex import (
     CodexProvider,
     _build_messages,
     _classify_error,
     _import_sdk,
 )
-from agent_sdk.types import (
+from daz_agent_sdk.types import (
     Capability,
     ErrorKind,
     Message,

@@ -8,10 +8,10 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from agent_sdk.conversation import Conversation
-from agent_sdk.providers.base import Provider
-from agent_sdk.registry import _provider_cache, _model_cache
-from agent_sdk.types import (
+from daz_agent_sdk.conversation import Conversation
+from daz_agent_sdk.providers.base import Provider
+from daz_agent_sdk.registry import _provider_cache, _model_cache
+from daz_agent_sdk.types import (
     Capability,
     ImageResult,
     Message,
