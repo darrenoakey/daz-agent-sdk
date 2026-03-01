@@ -19,7 +19,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - `logging_.py` — per-conversation UUID JSONL event logger
 - `conversation.py` — multi-turn Conversation class with history, fork, stream
 - `core.py` — Agent singleton: ask, conversation, image, speak, transcribe, models
-- `main.py` — CLI entry point (ask, models subcommands)
+- `main.py` — CLI entry point (ask, models, image subcommands)
 - `__init__.py` — exports `agent` singleton + all public types
 
 ## Providers
@@ -35,7 +35,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 | Capability | Module |
 |------------|--------|
-| Image | `capabilities/image.py` — subprocess to `generate_image` (--transparent flag for background removal) |
+| Image | `capabilities/image.py` — Nano Banana 2 (Gemini API) default, optional mflux local provider, inline BiRefNet background removal |
 | TTS | `capabilities/tts.py` — subprocess to `tts` |
 | STT | `capabilities/stt.py` — subprocess to `whisper` |
 
@@ -50,3 +50,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
 - `./run install` command installs editable package system-wide
 - 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)
+- Image generation: `provider=None` (default) uses Nano Banana 2 via Gemini API, `provider="mflux"` uses local mflux
+- BiRefNet background removal is inline (no subprocess) — requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
+- BiRefNet model cached as module-level singleton (`_birefnet_model`), loaded with `.float()` for CPU compatibility
+- `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally
