@@ -6,3 +6,5 @@ __pycache__/
 ~
 src/agent_sdk.egg-info/
 src/daz_agent_sdk.egg-info/
+dist/
+build/
