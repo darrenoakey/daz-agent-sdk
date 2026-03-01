@@ -54,3 +54,6 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - BiRefNet background removal is inline (no subprocess) — requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
 - BiRefNet model cached as module-level singleton (`_birefnet_model`), loaded with `.float()` for CPU compatibility
 - `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally
+- Claude provider `_collect_response` handles `ResultMessage.result` (definitive final answer in agentic mode) separately from `AssistantMessage` `TextBlock`s. When `cwd` is set, Claude uses tools and `AssistantMessage` may only contain `ToolUseBlock`s with no text.
+- mflux v0.16.6+ moved `Flux1` and `Config` to `mflux.models.flux.variants.txt2img.flux`, requires `ModelConfig.schnell()` from `mflux.models.common.config.model_config`
+- Exclude `image_test.py` from normal test runs (`--ignore`) — mflux test downloads multi-GB model
