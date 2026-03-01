@@ -57,3 +57,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Claude provider `_collect_response` handles `ResultMessage.result` (definitive final answer in agentic mode) separately from `AssistantMessage` `TextBlock`s. When `cwd` is set, Claude uses tools and `AssistantMessage` may only contain `ToolUseBlock`s with no text.
 - mflux v0.16.6+ moved `Flux1` and `Config` to `mflux.models.flux.variants.txt2img.flux`, requires `ModelConfig.schnell()` from `mflux.models.common.config.model_config`
 - Exclude `image_test.py` from normal test runs (`--ignore`) — mflux test downloads multi-GB model
+- Codex JSONL events: `item.completed` with `item.type=="agent_message"` carries response text; `turn.failed` and `error` events carry error messages; pipe prompt via stdin with `codex exec - --json -m MODEL -s read-only --ephemeral`
+- Gemini CLI JSON: `-o json` returns `{"response": "text", "stats": {...}}`; `-o stream-json` emits JSONL with `type=message role=assistant` for chunks and `type=result` for completion
+- Codex models with ChatGPT auth: `gpt-5.3-codex` works, `o4-mini` and `gpt-4.1-nano` do NOT; `gpt-4.1` works
+- mflux package lacks `py.typed` marker — pyright can't resolve imports statically; use `# pyright: ignore[reportMissingImports]` on mflux import lines
