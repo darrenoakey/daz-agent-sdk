@@ -179,15 +179,20 @@ async def _generate_mflux(
         ) from exc
 
     def _call() -> None:
-        from mflux import Flux1, Config as MfluxConfig
+        from mflux.models.common.config.model_config import ModelConfig
+        from mflux.models.flux.variants.txt2img.flux import Config as MfluxConfig
+        from mflux.models.flux.variants.txt2img.flux import Flux1
+
+        model_config = ModelConfig.schnell()
         flux = Flux1(
-            model_alias="schnell",
             quantize=8,
+            model_config=model_config,
         )
         image = flux.generate_image(
             seed=42,
             prompt=prompt,
             config=MfluxConfig(
+                model_config=model_config,
                 num_inference_steps=2,
                 width=width,
                 height=height,
@@ -325,9 +330,11 @@ async def generate_image(
                 ),
             ),
         )
-        for part in response.parts:
+        for part in response.parts or []:  # type: ignore[union-attr]
             if part.inline_data is not None:
-                return part.inline_data.data
+                data = part.inline_data.data
+                if data is not None:
+                    return data
         raise AgentError(
             "Nano Banana 2 returned no image data",
             kind=ErrorKind.INTERNAL,

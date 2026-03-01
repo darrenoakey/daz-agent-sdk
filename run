@@ -25,8 +25,8 @@ else:
         ).returncode
         sys.exit(rc)
 
-    # deploy: bump version, build, upload to PyPI, install globally from PyPI
-    if len(sys.argv) > 1 and sys.argv[1] == "deploy":
+    # deploy/publish: bump version, build, upload to PyPI, install globally from PyPI
+    if len(sys.argv) > 1 and sys.argv[1] in ("deploy", "publish"):
         import re
         import keyring  # type: ignore[import-untyped]
 

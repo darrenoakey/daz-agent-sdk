@@ -104,6 +104,12 @@ def _extract_text(sdk: Any, message: Any) -> str:
         if text_attr is not None:
             return str(text_attr)
         return ""
+    # ResultMessage carries the final text after agentic tool use
+    if hasattr(sdk, "ResultMessage") and isinstance(message, sdk.ResultMessage):
+        result = getattr(message, "result", None)
+        if result:
+            return str(result)
+        return ""
     if isinstance(message, sdk.AssistantMessage):
         parts: list[str] = []
         for block in message.content:
@@ -299,8 +305,16 @@ def _build_options(
 # iterate through the sdk query and collect all text blocks
 async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
     parts: list[str] = []
+    result_text: str | None = None
+    has_result_message = hasattr(sdk, "ResultMessage")
     try:
         async for message in sdk.query(prompt=prompt, options=options):
+            # ResultMessage is the definitive final answer in agentic mode
+            if has_result_message and isinstance(message, sdk.ResultMessage):
+                r = getattr(message, "result", None)
+                if r:
+                    result_text = str(r)
+                continue
             text = _extract_text(sdk, message)
             if text:
                 parts.append(text)
@@ -310,6 +324,9 @@ async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
             pass  # skip unknown message types (rate_limit_event etc)
         else:
             raise
+    # prefer ResultMessage.result (final answer) over intermediate text
+    if result_text is not None:
+        return result_text.strip()
     return "".join(parts).strip()
 
 
