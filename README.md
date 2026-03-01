@@ -19,12 +19,15 @@ That's it. Behind the scenes, daz-agent-sdk picks the best available model, hand
 ## Getting Started
 
 ```bash
-# Clone and install
-git clone <repo-url> && cd daz-agent-sdk
-./run install
+pip install daz-agent-sdk
 ```
 
-This installs daz-agent-sdk as an editable package so you can `import daz_agent_sdk` from anywhere.
+Or for development:
+
+```bash
+git clone https://github.com/darrenoakey/daz-agent-sdk && cd daz-agent-sdk
+./run install
+```
 
 **Quick test from the command line:**
 
@@ -103,24 +106,38 @@ Conversations handle rate limits transparently — if your provider goes down mi
 
 ### Generate Images
 
+Powered by Nano Banana 2 (Gemini) by default, with optional local mflux.
+
 ```python
 result = await agent.image(
     "A cyberpunk city at sunset",
     width=1024,
     height=1024,
-    output="city.jpg",
+    output="city.png",
 )
 print(result.path)
 ```
 
-Tier controls quality here too — `HIGH` gives you more detail, `LOW` gives you a quick draft in seconds.
-
 ```python
-# Quick draft for previewing (~5 seconds)
-draft = await agent.image("Robot logo", tier=Tier.LOW)
-
-# Transparent background
+# Transparent background (inline BiRefNet — no subprocess needed)
 logo = await agent.image("Company logo", transparent=True, output="logo.png")
+
+# Use local mflux instead of Nano Banana 2
+local = await agent.image("Robot logo", width=512, height=512, provider="mflux")
+```
+
+**From the CLI:**
+
+```bash
+daz-agent-sdk image --prompt "A red fox" --width 512 --height 512
+daz-agent-sdk image --prompt "Logo" --width 256 --height 256 --transparent --output logo.png
+```
+
+Install optional deps for transparency or local generation:
+
+```bash
+pip install "daz-agent-sdk[transparent]"  # BiRefNet background removal
+pip install "daz-agent-sdk[mflux]"        # Local mflux generation
 ```
 
 ### Text-to-Speech
@@ -164,13 +181,19 @@ You don't need to write Python to use daz-agent-sdk.
 
 ```bash
 # Ask a question
-./run ask "What year was Python created?"
+daz-agent-sdk ask "What year was Python created?"
 
 # Pick a tier
-./run ask --tier low "Summarise this paragraph: ..."
+daz-agent-sdk ask --tier low "Summarise this paragraph: ..."
+
+# Generate an image
+daz-agent-sdk image --prompt "A red fox" --width 512 --height 512
+
+# Transparent background
+daz-agent-sdk image --prompt "Logo" --width 256 --height 256 --transparent
 
 # List available models
-./run models
+daz-agent-sdk models
 ```
 
 ---
