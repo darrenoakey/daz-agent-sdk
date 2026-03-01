@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import os
-
 import pytest
-import pytest_asyncio  # noqa: F401 — registers asyncio mode
+import pytest_asyncio  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 from daz_agent_sdk.providers.codex import (
     CodexProvider,
-    _build_messages,
+    _build_prompt,
     _classify_error,
-    _import_sdk,
 )
 from daz_agent_sdk.types import (
     Capability,
@@ -22,33 +19,19 @@ from daz_agent_sdk.types import (
 
 
 # ##################################################################
-# sdk availability
-# check once at module level to gate integration tests
-_HAS_SDK = _import_sdk() is not None
-_HAS_API_KEY = bool(os.environ.get("OPENAI_API_KEY"))
-
-skip_if_no_sdk = pytest.mark.skipif(not _HAS_SDK, reason="openai not installed")
-skip_if_no_api = pytest.mark.skipif(
-    not (_HAS_SDK and _HAS_API_KEY),
-    reason="openai not installed or OPENAI_API_KEY not set",
-)
-
-
-# ##################################################################
 # helper — make model info
-# build a CodexProvider ModelInfo for use in integration tests
-def _make_model(model_id: str = "gpt-4.1-mini") -> ModelInfo:
+def _make_model(model_id: str = "gpt-5.3-codex") -> ModelInfo:
     return ModelInfo(
         provider="codex",
         model_id=model_id,
-        display_name="GPT-4.1 Mini",
+        display_name="GPT-5.3 Codex",
         capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
-        tier=Tier.MEDIUM,
+        tier=Tier.HIGH,
     )
 
 
 # ##################################################################
-# classify error — unit tests (no SDK required)
+# classify error — unit tests
 def test_classify_rate_limit() -> None:
     err = Exception("HTTP 429 rate_limit exceeded")
     assert _classify_error(err) == ErrorKind.RATE_LIMIT
@@ -75,40 +58,50 @@ def test_classify_internal() -> None:
 
 
 # ##################################################################
-# build messages — unit tests (no SDK required)
-def test_build_messages_simple() -> None:
+# build prompt — unit tests
+def test_build_prompt_simple() -> None:
     messages = [Message(role="user", content="Hello")]
-    result = _build_messages(messages)
-    assert result == [{"role": "user", "content": "Hello"}]
+    result = _build_prompt(messages)
+    assert result == "Hello"
 
 
-def test_build_messages_with_system() -> None:
+def test_build_prompt_with_system() -> None:
     messages = [
         Message(role="system", content="You are helpful."),
         Message(role="user", content="Hi"),
     ]
-    result = _build_messages(messages)
-    assert result == [
-        {"role": "system", "content": "You are helpful."},
-        {"role": "user", "content": "Hi"},
-    ]
+    result = _build_prompt(messages)
+    assert "[System]" in result
+    assert "You are helpful." in result
+    assert "Hi" in result
 
 
-def test_build_messages_with_history() -> None:
+def test_build_prompt_with_history() -> None:
     messages = [
         Message(role="user", content="What is 2+2?"),
         Message(role="assistant", content="4"),
         Message(role="user", content="And 3+3?"),
     ]
-    result = _build_messages(messages)
-    assert len(result) == 3
-    assert result[0] == {"role": "user", "content": "What is 2+2?"}
-    assert result[1] == {"role": "assistant", "content": "4"}
-    assert result[2] == {"role": "user", "content": "And 3+3?"}
+    result = _build_prompt(messages)
+    assert "What is 2+2?" in result
+    assert "[Previous assistant response]" in result
+    assert "And 3+3?" in result
+
+
+def test_build_prompt_with_schema() -> None:
+    from pydantic import BaseModel
+
+    class TestSchema(BaseModel):
+        answer: str
+
+    messages = [Message(role="user", content="test")]
+    result = _build_prompt(messages, schema=TestSchema)
+    assert "JSON" in result
+    assert "answer" in result
 
 
 # ##################################################################
-# provider basics — unit tests (no SDK required)
+# provider basics — unit tests
 def test_provider_name() -> None:
     provider = CodexProvider()
     assert provider.name == "codex"
@@ -119,16 +112,14 @@ async def test_available_returns_bool() -> None:
     provider = CodexProvider()
     result = await provider.available()
     assert isinstance(result, bool)
+    assert result is True  # codex CLI must be installed
 
 
-@skip_if_no_sdk
 @pytest.mark.asyncio
-async def test_list_models_when_available() -> None:
-    if not _HAS_API_KEY:
-        pytest.skip("OPENAI_API_KEY not set")
+async def test_list_models() -> None:
     provider = CodexProvider()
     models = await provider.list_models()
-    assert len(models) == 3
+    assert len(models) == 2
     for m in models:
         assert isinstance(m, ModelInfo)
         assert m.provider == "codex"
@@ -145,8 +136,7 @@ async def test_generate_image_raises() -> None:
 
 
 # ##################################################################
-# integration tests — require openai SDK and OPENAI_API_KEY
-@skip_if_no_api
+# integration tests — call real codex CLI
 @pytest.mark.asyncio
 async def test_complete_simple() -> None:
     provider = CodexProvider()
@@ -160,11 +150,10 @@ async def test_complete_simple() -> None:
     assert resp.turn_id is not None
 
 
-@skip_if_no_api
 @pytest.mark.asyncio
 async def test_stream_simple() -> None:
     provider = CodexProvider()
-    messages = [Message(role="user", content="Count from 1 to 3, one number per line.")]
+    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
     model = _make_model()
     chunks: list[str] = []
     async for chunk in provider.stream(messages, model, timeout=60.0):
@@ -172,4 +161,4 @@ async def test_stream_simple() -> None:
         chunks.append(chunk)
     assert len(chunks) > 0
     full = "".join(chunks)
-    assert full.strip() != ""
+    assert "4" in full

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
-import os
+import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Type
@@ -25,61 +26,30 @@ from daz_agent_sdk.types import (
 
 # ##################################################################
 # codex models
-# static list of OpenAI GPT-4.1 model variants with capability and tier info
+# static list of codex model variants — uses ChatGPT auth via codex CLI
 _CODEX_MODELS = [
     ModelInfo(
         provider="codex",
-        model_id="gpt-4.1",
-        display_name="GPT-4.1",
+        model_id="gpt-5.3-codex",
+        display_name="GPT-5.3 Codex",
         capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
         tier=Tier.HIGH,
         supports_tools=True,
     ),
     ModelInfo(
         provider="codex",
-        model_id="gpt-4.1-mini",
-        display_name="GPT-4.1 Mini",
+        model_id="gpt-4.1",
+        display_name="GPT-4.1",
         capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
         tier=Tier.MEDIUM,
         supports_tools=True,
-    ),
-    ModelInfo(
-        provider="codex",
-        model_id="gpt-4.1-nano",
-        display_name="GPT-4.1 Nano",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED}),
-        tier=Tier.LOW,
-        supports_tools=False,
     ),
 ]
 
 
 # ##################################################################
-# has sdk
-# module-level flag set once on first import attempt
-_HAS_SDK: bool | None = None
-
-
-# ##################################################################
-# import sdk
-# lazy import openai — provider reports unavailable if not installed.
-# returns the openai module or None.
-def _import_sdk() -> Any:
-    global _HAS_SDK
-    try:
-        import openai  # type: ignore[import]
-
-        _HAS_SDK = True
-        return openai
-    except ImportError:
-        _HAS_SDK = False
-        return None
-
-
-# ##################################################################
-# classify openai error
-# map openai SDK exceptions to agent-sdk ErrorKind for fallback decisions.
-# inspects the error message and type name for key signal words.
+# classify error
+# map codex CLI error messages to agent-sdk ErrorKind for fallback decisions
 def _classify_error(err: Exception) -> ErrorKind:
     msg = str(err).lower()
     type_name = type(err).__name__.lower()
@@ -95,32 +65,99 @@ def _classify_error(err: Exception) -> ErrorKind:
 
 
 # ##################################################################
-# build messages
-# convert agent_sdk Message objects to the dict format OpenAI expects.
-# passes role and content for each message as-is.
-def _build_messages(messages: list[Message]) -> list[dict[str, str]]:
-    return [{"role": m.role, "content": m.content} for m in messages]
+# build prompt
+# combine message history into a single prompt string for the codex CLI
+def _build_prompt(messages: list[Message], schema: Type[T] | None = None) -> str:
+    parts: list[str] = []
+    for msg in messages:
+        if msg.role == "system":
+            parts.append(f"[System]\n{msg.content}")
+        elif msg.role == "user":
+            parts.append(msg.content)
+        elif msg.role == "assistant":
+            parts.append(f"[Previous assistant response]\n{msg.content}")
+    prompt = "\n\n".join(parts)
+    if schema is not None:
+        schema_json = json.dumps(schema.model_json_schema(), indent=2)
+        prompt += (
+            "\n\nReturn ONLY valid JSON matching this schema, no other text:\n"
+            f"```json\n{schema_json}\n```"
+        )
+    return prompt
+
+
+# ##################################################################
+# run codex subprocess
+# pipe prompt to stdin, return (stdout, stderr, returncode)
+async def _run_codex(prompt: str, model_id: str, timeout: float) -> tuple[str, str, int]:
+    proc = await asyncio.create_subprocess_exec(
+        "codex", "exec", "-", "--json", "-m", model_id, "-s", "read-only", "--ephemeral",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(prompt.encode()),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise AgentError(f"codex request timed out after {timeout}s", kind=ErrorKind.TIMEOUT)
+    return stdout_bytes.decode(), stderr_bytes.decode(), proc.returncode or 0
+
+
+# ##################################################################
+# parse jsonl events
+# extract agent_message text from codex JSONL event stream
+def _parse_jsonl_response(stdout: str) -> tuple[str, dict[str, Any]]:
+    text_parts: list[str] = []
+    usage: dict[str, Any] = {}
+    for line in stdout.strip().splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = event.get("type", "")
+        if event_type == "item.completed":
+            item = event.get("item", {})
+            if item.get("type") == "agent_message":
+                text = item.get("text", "")
+                if text:
+                    text_parts.append(text)
+            elif item.get("type") == "error":
+                error_msg = item.get("message", "unknown error")
+                raise AgentError(error_msg, kind=_classify_error(Exception(error_msg)))
+        elif event_type == "turn.completed":
+            usage = event.get("usage", {})
+        elif event_type == "turn.failed":
+            error = event.get("error", {})
+            error_msg = error.get("message", "codex turn failed")
+            raise AgentError(error_msg, kind=_classify_error(Exception(error_msg)))
+        elif event_type == "error":
+            error_msg = event.get("message", "codex error")
+            raise AgentError(error_msg, kind=_classify_error(Exception(error_msg)))
+    return "".join(text_parts), usage
 
 
 # ##################################################################
 # codex provider
-# wraps the OpenAI async client for text completion, streaming, and
-# structured output. uses OPENAI_API_KEY from the environment.
+# wraps the codex CLI for text completion, streaming, and structured
+# output. uses ChatGPT auth managed by the codex CLI itself.
 class CodexProvider(Provider):
     name = "codex"
 
     # ##################################################################
     # available
-    # returns True if openai SDK is importable and OPENAI_API_KEY is set
+    # returns True if the codex CLI is on PATH
     async def available(self) -> bool:
-        sdk = _import_sdk()
-        if sdk is None:
-            return False
-        return bool(os.environ.get("OPENAI_API_KEY"))
+        return shutil.which("codex") is not None
 
     # ##################################################################
     # list models
-    # return the static codex model catalogue when the provider is available
+    # return the static codex model catalogue when the CLI is available
     async def list_models(self) -> list[ModelInfo]:
         if not await self.available():
             return []
@@ -128,8 +165,7 @@ class CodexProvider(Provider):
 
     # ##################################################################
     # complete
-    # send messages to OpenAI and return a full response. when schema is
-    # provided the response text is parsed and validated as pydantic.
+    # send messages to codex CLI and return a full response
     async def complete(
         self,
         messages: list[Message],
@@ -141,53 +177,24 @@ class CodexProvider(Provider):
         max_turns: int = 1,
         timeout: float = 120.0,
     ) -> Response | StructuredResponse:
-        sdk = _import_sdk()
-        if sdk is None:
-            raise AgentError("openai not installed", kind=ErrorKind.NOT_AVAILABLE)
+        if shutil.which("codex") is None:
+            raise AgentError("codex CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise AgentError("OPENAI_API_KEY not set", kind=ErrorKind.AUTH)
-
-        msg_list = _build_messages(messages)
-
-        if schema is not None:
-            schema_json = json.dumps(schema.model_json_schema(), indent=2)
-            instruction = (
-                f"\n\nRespond ONLY with valid JSON that matches this schema:\n{schema_json}\n"
-                "Do not include any explanation or markdown. Output raw JSON only."
-            )
-            system_indices = [i for i, m in enumerate(msg_list) if m["role"] == "system"]
-            if system_indices:
-                last_sys = system_indices[-1]
-                msg_list[last_sys] = {
-                    "role": "system",
-                    "content": msg_list[last_sys]["content"] + instruction,
-                }
-            else:
-                msg_list.insert(0, {"role": "system", "content": instruction.strip()})
-
+        prompt = _build_prompt(messages, schema)
         conversation_id = uuid4()
         turn_id = uuid4()
 
         try:
-            client = sdk.AsyncOpenAI(api_key=api_key, timeout=timeout)
-            completion = await client.chat.completions.create(
-                model=model.model_id,
-                messages=msg_list,
-            )
+            stdout, stderr, returncode = await _run_codex(prompt, model.model_id, timeout)
+        except AgentError:
+            raise
         except Exception as err:
-            kind = _classify_error(err)
-            raise AgentError(str(err), kind=kind) from err
+            raise AgentError(str(err), kind=_classify_error(err)) from err
 
-        text = (completion.choices[0].message.content or "") if completion.choices else ""
-        usage_data: dict[str, Any] = {}
-        if completion.usage:
-            usage_data = {
-                "prompt_tokens": completion.usage.prompt_tokens,
-                "completion_tokens": completion.usage.completion_tokens,
-                "total_tokens": completion.usage.total_tokens,
-            }
+        if returncode != 0 and not stdout.strip():
+            raise AgentError(f"codex exited with code {returncode}: {stderr}", kind=ErrorKind.INTERNAL)
+
+        text, usage = _parse_jsonl_response(stdout)
 
         if schema is not None:
             try:
@@ -203,7 +210,7 @@ class CodexProvider(Provider):
                 model_used=model,
                 conversation_id=conversation_id,
                 turn_id=turn_id,
-                usage=usage_data,
+                usage=usage,
                 parsed=parsed_instance,
             )
 
@@ -212,13 +219,12 @@ class CodexProvider(Provider):
             model_used=model,
             conversation_id=conversation_id,
             turn_id=turn_id,
-            usage=usage_data,
+            usage=usage,
         )
 
     # ##################################################################
     # stream
-    # send messages to OpenAI with streaming enabled and yield text chunks
-    # as they arrive. each non-empty delta content string is yielded.
+    # send messages to codex CLI and yield text chunks as JSONL events arrive
     async def stream(
         self,
         messages: list[Message],
@@ -226,31 +232,54 @@ class CodexProvider(Provider):
         *,
         timeout: float = 120.0,
     ) -> AsyncIterator[str]:
-        sdk = _import_sdk()
-        if sdk is None:
-            raise AgentError("openai not installed", kind=ErrorKind.NOT_AVAILABLE)
+        if shutil.which("codex") is None:
+            raise AgentError("codex CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise AgentError("OPENAI_API_KEY not set", kind=ErrorKind.AUTH)
+        prompt = _build_prompt(messages)
+        proc = await asyncio.create_subprocess_exec(
+            "codex", "exec", "-", "--json", "-m", model.model_id, "-s", "read-only", "--ephemeral",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        proc.stdin.write(prompt.encode())
+        proc.stdin.close()
 
         try:
-            client = sdk.AsyncOpenAI(api_key=api_key, timeout=timeout)
-            stream = await client.chat.completions.create(
-                model=model.model_id,
-                messages=_build_messages(messages),
-                stream=True,
-            )
-            async for chunk in stream:
-                if chunk.choices:
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        yield delta
+            async for raw_line in proc.stdout:
+                line = raw_line.decode().strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_type = event.get("type", "")
+                if event_type == "item.completed":
+                    item = event.get("item", {})
+                    if item.get("type") == "agent_message":
+                        text = item.get("text", "")
+                        if text:
+                            yield text
+                elif event_type == "turn.failed":
+                    error = event.get("error", {})
+                    error_msg = error.get("message", "codex turn failed")
+                    raise AgentError(error_msg, kind=_classify_error(Exception(error_msg)))
+                elif event_type == "error":
+                    error_msg = event.get("message", "codex error")
+                    raise AgentError(error_msg, kind=_classify_error(Exception(error_msg)))
         except AgentError:
             raise
         except Exception as err:
-            kind = _classify_error(err)
-            raise AgentError(str(err), kind=kind) from err
+            raise AgentError(str(err), kind=_classify_error(err)) from err
+        finally:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
 
     # ##################################################################
     # generate image

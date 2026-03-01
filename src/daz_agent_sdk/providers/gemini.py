@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
-import os
+import shutil
 from pathlib import Path
 from typing import Any, AsyncIterator, Type
 from uuid import uuid4
@@ -62,21 +63,8 @@ _GEMINI_MODELS = [
 
 
 # ##################################################################
-# import sdk
-# lazy import to avoid hard dependency — provider reports unavailable
-# if google-genai is not installed
-def _import_sdk() -> Any:
-    try:
-        from google import genai  # type: ignore[attr-defined]
-        return genai
-    except ImportError:
-        return None
-
-
-# ##################################################################
 # classify error
-# map google-genai exceptions and HTTP status codes to our error kinds
-# for fallback decision making
+# map gemini CLI error messages to our error kinds for fallback decisions
 def _classify_error(err: Exception) -> ErrorKind:
     msg = str(err).lower()
     if "429" in msg or "quota" in msg or "rate" in msg or "resource_exhausted" in msg:
@@ -92,9 +80,8 @@ def _classify_error(err: Exception) -> ErrorKind:
 
 # ##################################################################
 # build prompt
-# combine message history into a single prompt string for the genai
-# SDK, appending JSON schema instructions when structured output needed
-def _build_prompt(messages: list[Message], schema: Type[T] | None) -> str:
+# combine message history into a single prompt string for the gemini CLI
+def _build_prompt(messages: list[Message], schema: Type[T] | None = None) -> str:
     parts: list[str] = []
     for msg in messages:
         if msg.role == "system":
@@ -114,38 +101,38 @@ def _build_prompt(messages: list[Message], schema: Type[T] | None) -> str:
 
 
 # ##################################################################
+# run gemini subprocess
+# pipe prompt via stdin, return (stdout, stderr, returncode)
+async def _run_gemini(prompt: str, model_id: str, output_format: str, timeout: float) -> tuple[str, str, int]:
+    proc = await asyncio.create_subprocess_exec(
+        "gemini", "-p", "", "-m", model_id, "-o", output_format,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(prompt.encode()),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise AgentError(f"gemini request timed out after {timeout}s", kind=ErrorKind.TIMEOUT)
+    return stdout_bytes.decode(), stderr_bytes.decode(), proc.returncode or 0
+
+
+# ##################################################################
 # gemini provider
-# wraps the google-genai SDK for text generation, streaming, and
-# structured output. requires GEMINI_API_KEY in the environment.
+# wraps the gemini CLI for text generation, streaming, and structured
+# output. auth is handled by the gemini CLI itself (Google account).
 class GeminiProvider(Provider):
     name = "gemini"
 
     # ##################################################################
-    # init
-    # store optional api key override; falls back to GEMINI_API_KEY env var
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key
-
-    # ##################################################################
-    # get client
-    # build and return a configured genai Client instance
-    def _get_client(self) -> Any:
-        genai = _import_sdk()
-        if genai is None:
-            raise AgentError("google-genai not installed", kind=ErrorKind.NOT_AVAILABLE)
-        api_key = self._api_key or os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise AgentError("GEMINI_API_KEY not set", kind=ErrorKind.AUTH)
-        return genai.Client(api_key=api_key)
-
-    # ##################################################################
     # available
-    # check if google-genai is installed and GEMINI_API_KEY is configured
+    # check if gemini CLI is on PATH
     async def available(self) -> bool:
-        if _import_sdk() is None:
-            return False
-        api_key = self._api_key or os.environ.get("GEMINI_API_KEY")
-        return bool(api_key)
+        return shutil.which("gemini") is not None
 
     # ##################################################################
     # list models
@@ -157,9 +144,7 @@ class GeminiProvider(Provider):
 
     # ##################################################################
     # complete
-    # send messages to Gemini and collect the full response text.
-    # when schema is provided, appends schema instructions and parses
-    # the JSON response into the given pydantic model.
+    # send messages to gemini CLI and collect the full response text
     async def complete(
         self,
         messages: list[Message],
@@ -171,37 +156,43 @@ class GeminiProvider(Provider):
         max_turns: int = 1,
         timeout: float = 120.0,
     ) -> Response | StructuredResponse:
-        import asyncio
+        if shutil.which("gemini") is None:
+            raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
         prompt = _build_prompt(messages, schema)
         conversation_id = uuid4()
         turn_id = uuid4()
 
         try:
-            client = self._get_client()
-
-            def _call() -> str:
-                response = client.models.generate_content(
-                    model=model.model_id,
-                    contents=prompt,
-                )
-                return response.text or ""
-
-            loop = asyncio.get_event_loop()
-            response_text = await asyncio.wait_for(
-                loop.run_in_executor(None, _call),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            raise AgentError(
-                f"gemini request timed out after {timeout}s",
-                kind=ErrorKind.TIMEOUT,
-            )
+            stdout, stderr, returncode = await _run_gemini(prompt, model.model_id, "json", timeout)
         except AgentError:
             raise
         except Exception as err:
-            kind = _classify_error(err)
-            raise AgentError(str(err), kind=kind) from err
+            raise AgentError(str(err), kind=_classify_error(err)) from err
+
+        if returncode != 0 and not stdout.strip():
+            raise AgentError(f"gemini exited with code {returncode}: {stderr}", kind=ErrorKind.INTERNAL)
+
+        # parse JSON response: {"response": "text", "stats": {...}}
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise AgentError(f"Failed to parse gemini JSON output: {exc}", kind=ErrorKind.INTERNAL) from exc
+
+        response_text = data.get("response", "")
+        usage: dict[str, Any] = {}
+        stats = data.get("stats", {})
+        if stats:
+            models_stats = stats.get("models", {})
+            for model_stats in models_stats.values():
+                tokens = model_stats.get("tokens", {})
+                if tokens:
+                    usage = {
+                        "input_tokens": tokens.get("input", 0),
+                        "output_tokens": tokens.get("candidates", 0),
+                        "total_tokens": tokens.get("total", 0),
+                    }
+                    break
 
         if schema is not None:
             try:
@@ -217,6 +208,7 @@ class GeminiProvider(Provider):
                 model_used=model,
                 conversation_id=conversation_id,
                 turn_id=turn_id,
+                usage=usage,
                 parsed=parsed_obj,
             )
 
@@ -225,12 +217,12 @@ class GeminiProvider(Provider):
             model_used=model,
             conversation_id=conversation_id,
             turn_id=turn_id,
+            usage=usage,
         )
 
     # ##################################################################
     # stream
-    # send messages to Gemini and yield response chunks as they arrive
-    # using the generate_content_stream API
+    # send messages to gemini CLI with stream-json format and yield chunks
     async def stream(
         self,
         messages: list[Message],
@@ -238,42 +230,49 @@ class GeminiProvider(Provider):
         *,
         timeout: float = 120.0,
     ) -> AsyncIterator[str]:
-        import asyncio
+        if shutil.which("gemini") is None:
+            raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
         prompt = _build_prompt(messages, schema=None)
+        proc = await asyncio.create_subprocess_exec(
+            "gemini", "-p", "", "-m", model.model_id, "-o", "stream-json",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        proc.stdin.write(prompt.encode())
+        proc.stdin.close()
 
         try:
-            client = self._get_client()
-
-            def _iter_chunks() -> list[str]:
-                chunks: list[str] = []
-                for chunk in client.models.generate_content_stream(
-                    model=model.model_id,
-                    contents=prompt,
-                ):
-                    text = chunk.text or ""
-                    if text:
-                        chunks.append(text)
-                return chunks
-
-            loop = asyncio.get_event_loop()
-            chunks = await asyncio.wait_for(
-                loop.run_in_executor(None, _iter_chunks),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            raise AgentError(
-                f"gemini stream timed out after {timeout}s",
-                kind=ErrorKind.TIMEOUT,
-            )
+            async for raw_line in proc.stdout:
+                line = raw_line.decode().strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_type = event.get("type", "")
+                if event_type == "message" and event.get("role") == "assistant":
+                    content = event.get("content", "")
+                    if content:
+                        yield content
+                elif event_type == "result":
+                    status = event.get("status", "")
+                    if status != "success":
+                        raise AgentError(f"gemini stream failed: {status}", kind=ErrorKind.INTERNAL)
         except AgentError:
             raise
         except Exception as err:
-            kind = _classify_error(err)
-            raise AgentError(str(err), kind=kind) from err
-
-        for chunk in chunks:
-            yield chunk
+            raise AgentError(str(err), kind=_classify_error(err)) from err
+        finally:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
 
     # ##################################################################
     # generate image

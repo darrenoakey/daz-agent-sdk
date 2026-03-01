@@ -314,7 +314,7 @@ def test_get_provider_config_ollama(tmp_path: Path) -> None:
 def test_get_provider_config_gemini(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
     pc = get_provider_config("gemini", cfg)
-    assert pc["api_key_env"] == "GEMINI_API_KEY"
+    assert pc == {}
 
 
 def test_get_provider_config_unknown_returns_empty(tmp_path: Path) -> None:

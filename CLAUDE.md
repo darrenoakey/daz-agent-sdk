@@ -27,8 +27,8 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 | Provider | Module | Status |
 |----------|--------|--------|
 | Claude | `providers/claude.py` | Uses claude_agent_sdk, strips CLAUDECODE env |
-| Codex | `providers/codex.py` | OpenAI SDK, thread lifecycle |
-| Gemini | `providers/gemini.py` | google-genai SDK |
+| Codex | `providers/codex.py` | CLI subprocess (`codex exec --json`), ChatGPT auth |
+| Gemini | `providers/gemini.py` | CLI subprocess (`gemini -p -o json`), Google auth |
 | Ollama | `providers/ollama.py` | HTTP to localhost:11434 |
 
 ## Capabilities
@@ -43,7 +43,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 - Base `Provider.stream()` is NOT async — subclasses implement as async generators (which are AsyncIterator, not coroutines returning AsyncIterator)
 - `fallback.py` uses `EventLogger` Protocol for logger param — allows both ConversationLogger and test fakes
-- `google.genai` import needs `# type: ignore[attr-defined]` for pyright
+- Codex and Gemini providers use CLI subprocesses — no API keys needed, auth handled by CLI tools
 - Test fakes for Provider must use async generators (with yield), not async functions returning iterators
 - Config defaults have no vllm — removed by design
 - Conversation accepts `mcp_servers` for MCP tool integration (passed through to Claude provider)

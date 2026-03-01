@@ -153,7 +153,7 @@ class Config:
             ],
             "medium": [
                 "claude:claude-sonnet-4-6",
-                "codex:gpt-5.3-codex",
+                "codex:gpt-4.1",
                 "gemini:gemini-2.5-flash",
             ],
             "low": [
@@ -176,7 +176,7 @@ class Config:
         default_providers: dict[str, dict[str, Any]] = {
             "claude": {"permission_mode": "bypassPermissions"},
             "codex": {},
-            "gemini": {"api_key_env": "GEMINI_API_KEY"},
+            "gemini": {},
             "ollama": {"base_url": "http://localhost:11434"},
         }
         for provider_key, provider_cfg in default_providers.items():

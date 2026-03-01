@@ -128,7 +128,7 @@ def test_generate_transparent_image():
 def test_generate_mflux_image():
     """Generate an image via mflux provider (skipped if mflux not installed)."""
     try:
-        import mflux  # noqa: F401
+        import mflux  # noqa: F401  # pyright: ignore[reportMissingImports]
     except ImportError:
         pytest.skip("mflux not installed")
 

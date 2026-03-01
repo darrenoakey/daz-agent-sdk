@@ -129,7 +129,7 @@ def _remove_background_sync(image_path: Path) -> None:
     original = ImageOps.exif_transpose(original)
     rgb = original.convert("RGB") if original.mode != "RGB" else original
 
-    input_tensor = transform(rgb).unsqueeze(0).to(device)
+    input_tensor = torch.Tensor(transform(rgb)).unsqueeze(0).to(device)
     with torch.no_grad():
         outputs = model(input_tensor)
         prediction = outputs[-1].sigmoid().cpu()
@@ -171,7 +171,7 @@ async def _generate_mflux(
     timeout: float = 120.0,
 ) -> None:
     try:
-        import mflux  # noqa: F401
+        import mflux  # noqa: F401  # pyright: ignore[reportMissingImports]
     except ImportError as exc:
         raise AgentError(
             "mflux not installed — pip install 'daz-agent-sdk[mflux]'",
@@ -179,9 +179,9 @@ async def _generate_mflux(
         ) from exc
 
     def _call() -> None:
-        from mflux.models.common.config.model_config import ModelConfig
-        from mflux.models.flux.variants.txt2img.flux import Config as MfluxConfig
-        from mflux.models.flux.variants.txt2img.flux import Flux1
+        from mflux.models.common.config.model_config import ModelConfig  # pyright: ignore[reportMissingImports]
+        from mflux.models.flux.variants.txt2img.flux import Config as MfluxConfig  # pyright: ignore[reportMissingImports]
+        from mflux.models.flux.variants.txt2img.flux import Flux1  # pyright: ignore[reportMissingImports]
 
         model_config = ModelConfig.schnell()
         flux = Flux1(
