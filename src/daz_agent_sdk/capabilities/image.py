@@ -224,6 +224,7 @@ async def generate_image(
     width: int,
     height: int,
     output: str | Path | None = None,
+    image: str | Path | None = None,
     tier: Tier = Tier.HIGH,
     transparent: bool = False,
     timeout: float = 120.0,
@@ -233,6 +234,16 @@ async def generate_image(
     conversation_id: UUID | None = None,
 ) -> ImageResult:
     _ = config or load_config()  # ensure config is loaded
+
+    # validate input image if provided
+    input_image_path: Path | None = None
+    if image is not None:
+        input_image_path = Path(image)
+        if not input_image_path.exists():
+            raise AgentError(
+                f"Input image not found: {input_image_path}",
+                kind=ErrorKind.INVALID_REQUEST,
+            )
 
     if output is None:
         tmp = tempfile.NamedTemporaryFile(
@@ -319,9 +330,17 @@ async def generate_image(
     client = genai.Client(api_key=api_key)
 
     def _call() -> bytes:
+        contents: list[Any] = []
+        if input_image_path is not None:
+            image_bytes = input_image_path.read_bytes()
+            suffix = input_image_path.suffix.lower()
+            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+            mime_type = mime_map.get(suffix, "image/png")
+            contents.append(types.Part(inline_data=types.Blob(data=image_bytes, mime_type=mime_type)))
+        contents.append(prompt)
         response = client.models.generate_content(
             model=_NANO_BANANA_MODEL.model_id,
-            contents=[prompt],
+            contents=contents,
             config=types.GenerateContentConfig(
                 response_modalities=["IMAGE"],
                 image_config=types.ImageConfig(

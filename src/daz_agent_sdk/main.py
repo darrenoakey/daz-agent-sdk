@@ -14,11 +14,13 @@ from daz_agent_sdk.types import Tier
 async def _run_image(args: argparse.Namespace) -> int:
     agent = Agent(load_config())
     output = args.output if args.output else None
+    image = args.image if args.image else None
     result = await agent.image(
         args.prompt,
         width=args.width,
         height=args.height,
         output=output,
+        image=image,
         transparent=args.transparent,
         provider=args.provider,
     )
@@ -77,6 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     img_p.add_argument("--width", type=int, required=True, help="Image width")
     img_p.add_argument("--height", type=int, required=True, help="Image height")
     img_p.add_argument("--output", default=None, help="Output file path")
+    img_p.add_argument("--image", default=None, help="Input image for editing (img2img)")
     img_p.add_argument("--transparent", action="store_true", help="Remove background")
     img_p.add_argument("--provider", default=None, help="Image provider (default: nano-banana-2, or 'mflux')")
 

@@ -302,13 +302,33 @@ def _build_options(
 
 # ##################################################################
 # collect response
-# iterate through the sdk query and collect all text blocks
+# iterate through the sdk query and collect all text blocks.
+# monkey-patches parse_message to skip unknown message types
+# (e.g. rate_limit_event) instead of raising MessageParseError
+# which kills the async generator and loses all collected text.
 async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
+    import importlib
+    _client = importlib.import_module("claude_agent_sdk._internal.client")
+
+    class _SkipMessage:
+        """Sentinel returned for unparseable messages."""
+
+    _orig_parse = getattr(_client, "parse_message")
+
+    def _safe_parse(data: Any) -> Any:
+        try:
+            return _orig_parse(data)
+        except Exception:
+            return _SkipMessage()
+
+    setattr(_client, "parse_message", _safe_parse)
     parts: list[str] = []
     result_text: str | None = None
-    has_result_message = hasattr(sdk, "ResultMessage")
     try:
+        has_result_message = hasattr(sdk, "ResultMessage")
         async for message in sdk.query(prompt=prompt, options=options):
+            if isinstance(message, _SkipMessage):
+                continue
             # ResultMessage is the definitive final answer in agentic mode
             if has_result_message and isinstance(message, sdk.ResultMessage):
                 r = getattr(message, "result", None)
@@ -321,9 +341,11 @@ async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
     except Exception as err:
         err_str = str(err).lower()
         if "messageparse" in err_str or "unknown" in err_str:
-            pass  # skip unknown message types (rate_limit_event etc)
+            pass  # skip unknown message types that slipped through
         else:
             raise
+    finally:
+        setattr(_client, "parse_message", _orig_parse)
     # prefer ResultMessage.result (final answer) over intermediate text
     if result_text is not None:
         return result_text.strip()
@@ -334,8 +356,25 @@ async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
 # stream response
 # iterate through the sdk query and yield text chunks as they arrive
 async def _stream_response(sdk: Any, prompt: str, options: Any) -> AsyncIterator[str]:
+    import importlib
+    _client = importlib.import_module("claude_agent_sdk._internal.client")
+
+    class _SkipMessage:
+        pass
+
+    _orig_parse = getattr(_client, "parse_message")
+
+    def _safe_parse(data: Any) -> Any:
+        try:
+            return _orig_parse(data)
+        except Exception:
+            return _SkipMessage()
+
+    setattr(_client, "parse_message", _safe_parse)
     try:
         async for message in sdk.query(prompt=prompt, options=options):
+            if isinstance(message, _SkipMessage):
+                continue
             text = _extract_text(sdk, message)
             if text:
                 yield text
@@ -345,6 +384,8 @@ async def _stream_response(sdk: Any, prompt: str, options: Any) -> AsyncIterator
             pass
         else:
             raise
+    finally:
+        setattr(_client, "parse_message", _orig_parse)
 
 
 # ##################################################################
