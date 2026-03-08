@@ -42,9 +42,10 @@ def schema_instructions(schema_cls: Type[BaseModel], filename: str) -> str:
         f"\n\n## REQUIRED: Structured Output\n"
         f"You MUST produce valid JSON matching this exact schema:\n"
         f"```json\n{schema_json}\n```\n"
-        f"If you have file-writing capability, write the raw JSON to `{filename}` (no markdown fences, no extra text).\n"
-        f"If you CANNOT write files, output ONLY the raw JSON object as your entire response — "
-        f"no explanation, no markdown fences, no surrounding text. Just the JSON.\n"
+        f"Write the raw JSON to `{filename}` (no markdown fences, no extra text in the file).\n"
+        f"ALSO, your final response text MUST end with the complete JSON object — "
+        f"after any explanation, include a line containing ONLY the raw JSON. "
+        f"This is critical — the JSON must appear at the end of your response.\n"
     )
 
 
@@ -74,6 +75,12 @@ def extract_result(
     4. Clean up the file
     """
     filepath = os.path.join(cwd, filename)
+    _logger.info("structured: looking for %s in %s", filename, cwd)
+    if os.path.isdir(cwd):
+        contents = os.listdir(cwd)
+        _logger.info("structured: cwd contents (%d files): %s", len(contents), contents[:20])
+    else:
+        _logger.warning("structured: cwd does not exist: %s", cwd)
 
     json_text: str | None = None
 

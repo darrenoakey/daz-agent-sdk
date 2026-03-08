@@ -173,11 +173,52 @@ class AgentError(Exception):
 # extract JSON from LLM responses that may be wrapped in markdown
 # code blocks
 def parse_json_from_llm(text: str) -> Any:
+    """Parse JSON from LLM response text.
+
+    Handles: raw JSON, markdown-fenced JSON, and JSON embedded at the end
+    of a prose response (common when agentic providers summarize their work
+    then append the JSON).
+    """
     text = text.strip()
+    # Strip markdown fences
     if text.startswith("```"):
         lines = text.split("\n")
         lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        text = "\n".join(lines)
-    return json.loads(text)
+        text = "\n".join(lines).strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting JSON from markdown fences anywhere in the text
+    import re
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Try finding the last JSON object in the text (scan backwards for '{')
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] == '}':
+            # Found end of potential JSON, find matching opening brace
+            depth = 0
+            for j in range(i, -1, -1):
+                if text[j] == '}':
+                    depth += 1
+                elif text[j] == '{':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[j:i + 1]
+                        try:
+                            return json.loads(candidate)
+                        except json.JSONDecodeError:
+                            break
+            break
+
+    raise json.JSONDecodeError("No valid JSON found in text", text, 0)

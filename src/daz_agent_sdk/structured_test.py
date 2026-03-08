@@ -93,6 +93,32 @@ def test_extract_result_empty_raises() -> None:
             assert "empty" in str(e).lower()
 
 
+def test_extract_result_from_prose_with_json() -> None:
+    """Extracts JSON embedded at the end of a prose response."""
+    with tempfile.TemporaryDirectory() as tmp:
+        prose = (
+            'The analysis has been written to the file.\n\n'
+            'Key findings:\n- thing one\n- thing two\n\n'
+            '{"name": "embedded", "value": 55}'
+        )
+        result = extract_result(SampleSchema, "nonexistent.json", tmp, prose)
+        assert result.name == "embedded"
+        assert result.value == 55
+
+
+def test_extract_result_from_prose_with_fenced_json() -> None:
+    """Extracts JSON from markdown fences in middle of prose."""
+    with tempfile.TemporaryDirectory() as tmp:
+        prose = (
+            'Here is the analysis:\n\n'
+            '```json\n{"name": "fenced_mid", "value": 77}\n```\n\n'
+            'Let me know if you need anything else.'
+        )
+        result = extract_result(SampleSchema, "nonexistent.json", tmp, prose)
+        assert result.name == "fenced_mid"
+        assert result.value == 77
+
+
 def test_extract_result_invalid_json_raises() -> None:
     """Raises when JSON is invalid."""
     with tempfile.TemporaryDirectory() as tmp:
