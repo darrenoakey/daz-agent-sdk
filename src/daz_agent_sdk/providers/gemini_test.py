@@ -8,6 +8,7 @@ from daz_agent_sdk.types import (
     Message,
     ModelInfo,
     Response,
+    StructuredResponse,
     Tier,
 )
 
@@ -74,16 +75,11 @@ def test_build_prompt_with_history() -> None:
     assert "second" in result
 
 
-def test_build_prompt_with_schema() -> None:
-    from pydantic import BaseModel
-
-    class TestSchema(BaseModel):
-        answer: str
-
+def test_build_prompt_ignores_schema() -> None:
+    """Schema is now handled separately via schema_instructions, not in _build_prompt."""
     messages = [Message(role="user", content="test")]
-    result = _build_prompt(messages, schema=TestSchema)
-    assert "JSON" in result
-    assert "answer" in result
+    result = _build_prompt(messages)
+    assert result == "test"
 
 
 # ##################################################################
@@ -132,6 +128,23 @@ async def test_complete_simple() -> None:
     result = await provider.complete(messages, flash_lite, timeout=30.0)
     assert isinstance(result, Response)
     assert "4" in result.text
+
+
+@pytest.mark.asyncio
+async def test_complete_structured() -> None:
+    """Structured output via file-based extraction — gemini returns text, SDK parses it."""
+    from pydantic import BaseModel
+
+    class MathResult(BaseModel):
+        answer: int
+
+    provider = GeminiProvider()
+    models = await provider.list_models()
+    flash_lite = next(m for m in models if m.tier == Tier.LOW)
+    messages = [Message(role="user", content="What is 10 + 5?")]
+    result = await provider.complete(messages, flash_lite, schema=MathResult, timeout=60.0)
+    assert isinstance(result, StructuredResponse)
+    assert result.parsed.answer == 15
 
 
 @pytest.mark.asyncio

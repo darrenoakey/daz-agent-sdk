@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+
+_logger = logging.getLogger(__name__)
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel
 
+from daz_agent_sdk.structured import ensure_cwd, extract_result, schema_filename, schema_instructions
 from daz_agent_sdk.types import (
     AgentError,
     Capability,
@@ -18,7 +22,6 @@ from daz_agent_sdk.types import (
     Response,
     StructuredResponse,
     Tier,
-    parse_json_from_llm,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -85,35 +88,23 @@ def _classify_error(err: Exception) -> ErrorKind:
 
 # ##################################################################
 # import sdk
-# lazy import to avoid hard dependency — provider reports unavailable
-# if not installed
-def _import_sdk() -> Any:
-    try:
-        import claude_agent_sdk
-        return claude_agent_sdk
-    except ImportError:
-        return None
+import claude_agent_sdk as _sdk
 
 
 # ##################################################################
 # extract text from messages
 # pull text content from claude sdk AssistantMessage objects
-def _extract_text(sdk: Any, message: Any) -> str:
-    if not hasattr(sdk, "AssistantMessage") or not hasattr(sdk, "TextBlock"):
-        text_attr = getattr(message, "text", None)
-        if text_attr is not None:
-            return str(text_attr)
-        return ""
+def _extract_text(message: Any) -> str:
     # ResultMessage carries the final text after agentic tool use
-    if hasattr(sdk, "ResultMessage") and isinstance(message, sdk.ResultMessage):
+    if isinstance(message, _sdk.ResultMessage):
         result = getattr(message, "result", None)
         if result:
             return str(result)
         return ""
-    if isinstance(message, sdk.AssistantMessage):
+    if isinstance(message, _sdk.AssistantMessage):
         parts: list[str] = []
         for block in message.content:
-            if isinstance(block, sdk.TextBlock):
+            if isinstance(block, _sdk.TextBlock):
                 parts.append(block.text)
         return "".join(parts)
     return ""
@@ -136,18 +127,12 @@ class ClaudeProvider:
     # available
     # check if claude agent sdk is installed and importable
     async def available(self) -> bool:
-        sdk = _import_sdk()
-        if sdk is None:
-            return False
-        # check that the query function exists
-        return hasattr(sdk, "query")
+        return hasattr(_sdk, "query")
 
     # ##################################################################
     # list models
     # return the known claude model catalogue
     async def list_models(self) -> list[ModelInfo]:
-        if not await self.available():
-            return []
         return list(_CLAUDE_MODELS)
 
     # ##################################################################
@@ -162,20 +147,27 @@ class ClaudeProvider:
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         mcp_servers: dict[str, Any] | None = None,
     ) -> Response | StructuredResponse:
-        sdk = _import_sdk()
-        if sdk is None:
-            raise AgentError("claude_agent_sdk not installed", kind=ErrorKind.NOT_AVAILABLE)
+        # For structured output, use file-based extraction
+        out_filename: str | None = None
+        effective_cwd = cwd
+        created_temp_cwd = False
+        if schema is not None:
+            out_filename = schema_filename()
+            effective_cwd, created_temp_cwd = ensure_cwd(cwd)
 
-        prompt = _build_prompt(messages, schema)
-        options = _build_options(sdk, model, tools, cwd, max_turns, self._permission_mode, mcp_servers)
+        prompt = _build_prompt(messages)
+        if schema is not None and out_filename is not None:
+            prompt += schema_instructions(schema, out_filename)
+
+        options = _build_options(_sdk, model, tools, effective_cwd, max_turns, self._permission_mode, mcp_servers)
 
         saved = _strip_claudecode()
         try:
             response_text = await asyncio.wait_for(
-                _collect_response(sdk, prompt, options),
+                _collect_response(prompt, options),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
@@ -189,23 +181,30 @@ class ClaudeProvider:
         finally:
             _restore_claudecode(saved)
 
-        if schema is not None:
-            parsed_json = parse_json_from_llm(response_text)
-            parsed_obj = schema.model_validate(parsed_json)
-            return StructuredResponse(
+        try:
+            if schema is not None and out_filename is not None and effective_cwd is not None:
+                try:
+                    parsed_obj = extract_result(schema, out_filename, str(effective_cwd), response_text)
+                except Exception as e:
+                    raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
+                return StructuredResponse(
+                    text=response_text,
+                    model_used=model,
+                    conversation_id=_placeholder_uuid(),
+                    turn_id=_placeholder_uuid(),
+                    parsed=parsed_obj,
+                )
+
+            return Response(
                 text=response_text,
                 model_used=model,
                 conversation_id=_placeholder_uuid(),
                 turn_id=_placeholder_uuid(),
-                parsed=parsed_obj,
             )
-
-        return Response(
-            text=response_text,
-            model_used=model,
-            conversation_id=_placeholder_uuid(),
-            turn_id=_placeholder_uuid(),
-        )
+        finally:
+            if created_temp_cwd and effective_cwd:
+                import shutil
+                shutil.rmtree(effective_cwd, ignore_errors=True)
 
     # ##################################################################
     # stream
@@ -215,19 +214,15 @@ class ClaudeProvider:
         messages: list[Message],
         model: ModelInfo,
         *,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         mcp_servers: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
-        sdk = _import_sdk()
-        if sdk is None:
-            raise AgentError("claude_agent_sdk not installed", kind=ErrorKind.NOT_AVAILABLE)
-
-        prompt = _build_prompt(messages, schema=None)
-        options = _build_options(sdk, model, None, None, 1, self._permission_mode, mcp_servers)
+        prompt = _build_prompt(messages)
+        options = _build_options(_sdk, model, None, None, 1, self._permission_mode, mcp_servers)
 
         saved = _strip_claudecode()
         try:
-            async for chunk in _stream_response(sdk, prompt, options):
+            async for chunk in _stream_response(prompt, options):
                 yield chunk
         except Exception as err:
             kind = _classify_error(err)
@@ -254,7 +249,7 @@ class ClaudeProvider:
 # build prompt
 # combine message history into a single prompt string for the sdk,
 # appending json schema instructions when structured output needed
-def _build_prompt(messages: list[Message], schema: Type[T] | None) -> str:
+def _build_prompt(messages: list[Message]) -> str:
     parts: list[str] = []
     for msg in messages:
         if msg.role == "system":
@@ -263,15 +258,7 @@ def _build_prompt(messages: list[Message], schema: Type[T] | None) -> str:
             parts.append(msg.content)
         elif msg.role == "assistant":
             parts.append(f"[Previous assistant response]\n{msg.content}")
-    prompt = "\n\n".join(parts)
-    if schema is not None:
-        schema_json = schema.model_json_schema()
-        import json
-        prompt += (
-            "\n\nReturn ONLY valid JSON matching this schema, no other text:\n"
-            f"```json\n{json.dumps(schema_json, indent=2)}\n```"
-        )
-    return prompt
+    return "\n\n".join(parts)
 
 
 # ##################################################################
@@ -306,7 +293,7 @@ def _build_options(
 # monkey-patches parse_message to skip unknown message types
 # (e.g. rate_limit_event) instead of raising MessageParseError
 # which kills the async generator and loses all collected text.
-async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
+async def _collect_response(prompt: str, options: Any) -> str:
     import importlib
     _client = importlib.import_module("claude_agent_sdk._internal.client")
 
@@ -324,24 +311,29 @@ async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
     setattr(_client, "parse_message", _safe_parse)
     parts: list[str] = []
     result_text: str | None = None
+    msg_count = 0
+    skip_count = 0
+    msg_types: list[str] = []
     try:
-        has_result_message = hasattr(sdk, "ResultMessage")
-        async for message in sdk.query(prompt=prompt, options=options):
+        async for message in _sdk.query(prompt=prompt, options=options):
+            msg_count += 1
             if isinstance(message, _SkipMessage):
+                skip_count += 1
                 continue
+            msg_types.append(type(message).__name__)
             # ResultMessage is the definitive final answer in agentic mode
-            if has_result_message and isinstance(message, sdk.ResultMessage):
+            if isinstance(message, _sdk.ResultMessage):
                 r = getattr(message, "result", None)
                 if r:
                     result_text = str(r)
                 continue
-            text = _extract_text(sdk, message)
+            text = _extract_text(message)
             if text:
                 parts.append(text)
     except Exception as err:
         err_str = str(err).lower()
         if "messageparse" in err_str or "unknown" in err_str:
-            pass  # skip unknown message types that slipped through
+            _logger.warning("claude: swallowed parse error after %d msgs (%d skipped): %s", msg_count, skip_count, err)
         else:
             raise
     finally:
@@ -349,13 +341,19 @@ async def _collect_response(sdk: Any, prompt: str, options: Any) -> str:
     # prefer ResultMessage.result (final answer) over intermediate text
     if result_text is not None:
         return result_text.strip()
-    return "".join(parts).strip()
+    response = "".join(parts).strip()
+    if not response:
+        _logger.warning(
+            "claude: empty response — %d messages received, %d skipped, types: %s, parts: %d",
+            msg_count, skip_count, msg_types, len(parts),
+        )
+    return response
 
 
 # ##################################################################
 # stream response
 # iterate through the sdk query and yield text chunks as they arrive
-async def _stream_response(sdk: Any, prompt: str, options: Any) -> AsyncIterator[str]:
+async def _stream_response(prompt: str, options: Any) -> AsyncIterator[str]:
     import importlib
     _client = importlib.import_module("claude_agent_sdk._internal.client")
 
@@ -372,10 +370,10 @@ async def _stream_response(sdk: Any, prompt: str, options: Any) -> AsyncIterator
 
     setattr(_client, "parse_message", _safe_parse)
     try:
-        async for message in sdk.query(prompt=prompt, options=options):
+        async for message in _sdk.query(prompt=prompt, options=options):
             if isinstance(message, _SkipMessage):
                 continue
-            text = _extract_text(sdk, message)
+            text = _extract_text(message)
             if text:
                 yield text
     except Exception as err:

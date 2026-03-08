@@ -93,7 +93,7 @@ class Conversation:
         *,
         schema: Type[T] | None = None,
         tier: Tier | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> Response | StructuredResponse:
         effective_tier = tier if tier is not None else self._tier
         self._history.append(Message(role="user", content=content))
@@ -135,7 +135,7 @@ class Conversation:
         content: str,
         *,
         tier: Tier | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> AsyncIterator[str]:
         effective_tier = tier if tier is not None else self._tier
         self._history.append(Message(role="user", content=content))

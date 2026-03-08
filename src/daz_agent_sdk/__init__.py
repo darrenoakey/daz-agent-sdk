@@ -1,4 +1,4 @@
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 from daz_agent_sdk.conversation import Conversation
 from daz_agent_sdk.core import Agent

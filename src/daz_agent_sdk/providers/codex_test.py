@@ -14,6 +14,7 @@ from daz_agent_sdk.types import (
     Message,
     ModelInfo,
     Response,
+    StructuredResponse,
     Tier,
 )
 
@@ -88,16 +89,11 @@ def test_build_prompt_with_history() -> None:
     assert "And 3+3?" in result
 
 
-def test_build_prompt_with_schema() -> None:
-    from pydantic import BaseModel
-
-    class TestSchema(BaseModel):
-        answer: str
-
+def test_build_prompt_ignores_schema() -> None:
+    """Schema is now handled separately via schema_instructions, not in _build_prompt."""
     messages = [Message(role="user", content="test")]
-    result = _build_prompt(messages, schema=TestSchema)
-    assert "JSON" in result
-    assert "answer" in result
+    result = _build_prompt(messages)
+    assert result == "test"
 
 
 # ##################################################################
@@ -148,6 +144,22 @@ async def test_complete_simple() -> None:
     assert resp.model_used is model
     assert resp.conversation_id is not None
     assert resp.turn_id is not None
+
+
+@pytest.mark.asyncio
+async def test_complete_structured() -> None:
+    """Structured output via file-based extraction — codex returns text, SDK parses it."""
+    from pydantic import BaseModel
+
+    class MathResult(BaseModel):
+        answer: int
+
+    provider = CodexProvider()
+    messages = [Message(role="user", content="What is 10 + 5?")]
+    model = _make_model()
+    result = await provider.complete(messages, model, schema=MathResult, timeout=60.0)
+    assert isinstance(result, StructuredResponse)
+    assert result.parsed.answer == 15
 
 
 @pytest.mark.asyncio

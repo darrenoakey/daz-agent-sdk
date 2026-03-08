@@ -58,7 +58,7 @@ def test_classify_internal() -> None:
 # verify message history is concatenated correctly
 def test_build_prompt_simple() -> None:
     messages = [Message(role="user", content="hello")]
-    result = _build_prompt(messages, schema=None)
+    result = _build_prompt(messages)
     assert result == "hello"
 
 
@@ -67,7 +67,7 @@ def test_build_prompt_with_system() -> None:
         Message(role="system", content="you are helpful"),
         Message(role="user", content="hi"),
     ]
-    result = _build_prompt(messages, schema=None)
+    result = _build_prompt(messages)
     assert "[System]" in result
     assert "you are helpful" in result
     assert "hi" in result
@@ -79,22 +79,17 @@ def test_build_prompt_with_history() -> None:
         Message(role="assistant", content="response"),
         Message(role="user", content="second"),
     ]
-    result = _build_prompt(messages, schema=None)
+    result = _build_prompt(messages)
     assert "first" in result
     assert "[Previous assistant response]" in result
     assert "second" in result
 
 
-def test_build_prompt_with_schema() -> None:
-    from pydantic import BaseModel
-
-    class TestSchema(BaseModel):
-        answer: str
-
+def test_build_prompt_ignores_schema() -> None:
+    """Schema is now handled separately via schema_instructions, not in _build_prompt."""
     messages = [Message(role="user", content="test")]
-    result = _build_prompt(messages, schema=TestSchema)
-    assert "JSON" in result
-    assert "answer" in result
+    result = _build_prompt(messages)
+    assert result == "test"
 
 
 # ##################################################################
@@ -166,9 +161,32 @@ async def test_complete_structured() -> None:
     models = await provider.list_models()
     haiku = next(m for m in models if m.tier == Tier.LOW)
     messages = [Message(role="user", content="What is 10 + 5?")]
-    result = await provider.complete(messages, haiku, schema=MathResult, timeout=30.0)
+    result = await provider.complete(messages, haiku, schema=MathResult, timeout=60.0)
     assert isinstance(result, StructuredResponse)
     assert result.parsed.answer == 15
+
+
+@pytest.mark.skipif(not _HAS_SDK, reason="claude_agent_sdk not installed")
+@pytest.mark.asyncio
+async def test_complete_structured_complex() -> None:
+    """Structured output with multiple fields via file-based extraction."""
+    from pydantic import BaseModel
+
+    class Analysis(BaseModel):
+        summary: str
+        keywords: list[str]
+        score: int
+
+    provider = ClaudeProvider()
+    models = await provider.list_models()
+    haiku = next(m for m in models if m.tier == Tier.LOW)
+    messages = [Message(role="user", content="Analyze the word 'hello'. Give a one-sentence summary, 3 keywords, and a friendliness score 1-10.")]
+    result = await provider.complete(messages, haiku, schema=Analysis, timeout=60.0)
+    assert isinstance(result, StructuredResponse)
+    assert isinstance(result.parsed, Analysis)
+    assert len(result.parsed.summary) > 0
+    assert len(result.parsed.keywords) >= 1
+    assert 1 <= result.parsed.score <= 10
 
 
 @pytest.mark.skipif(not _HAS_SDK, reason="claude_agent_sdk not installed")

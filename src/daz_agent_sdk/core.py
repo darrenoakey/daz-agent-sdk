@@ -55,7 +55,7 @@ class Agent:
         system: str | None = None,
         provider: str | None = None,
         model: str | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         max_turns: int = 1,
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
@@ -169,7 +169,7 @@ class Agent:
         image: str | Path | None = None,
         tier: Tier = Tier.HIGH,
         transparent: bool = False,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         provider: str | None = None,
     ) -> ImageResult:
         return await generate_image(
@@ -198,7 +198,7 @@ class Agent:
         voice: str = "gary",
         output: str | Path | None = None,
         speed: float = 1.0,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> AudioResult:
         return await synthesize_speech(
             text,
@@ -220,7 +220,7 @@ class Agent:
         *,
         model_size: str = "small",
         language: str | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> str:
         return await _transcribe(
             audio,

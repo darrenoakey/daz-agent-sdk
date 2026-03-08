@@ -9,6 +9,7 @@ from typing import Any, Type
 from uuid import uuid4
 
 from daz_agent_sdk.providers.base import Provider
+from daz_agent_sdk.structured import extract_result, schema_filename, schema_instructions
 from daz_agent_sdk.types import (
     AgentError,
     Capability,
@@ -20,7 +21,6 @@ from daz_agent_sdk.types import (
     StructuredResponse,
     T,
     Tier,
-    parse_json_from_llm,
 )
 
 
@@ -67,7 +67,7 @@ def _classify_error(err: Exception) -> ErrorKind:
 # ##################################################################
 # build prompt
 # combine message history into a single prompt string for the codex CLI
-def _build_prompt(messages: list[Message], schema: Type[T] | None = None) -> str:
+def _build_prompt(messages: list[Message]) -> str:
     parts: list[str] = []
     for msg in messages:
         if msg.role == "system":
@@ -76,14 +76,7 @@ def _build_prompt(messages: list[Message], schema: Type[T] | None = None) -> str
             parts.append(msg.content)
         elif msg.role == "assistant":
             parts.append(f"[Previous assistant response]\n{msg.content}")
-    prompt = "\n\n".join(parts)
-    if schema is not None:
-        schema_json = json.dumps(schema.model_json_schema(), indent=2)
-        prompt += (
-            "\n\nReturn ONLY valid JSON matching this schema, no other text:\n"
-            f"```json\n{schema_json}\n```"
-        )
-    return prompt
+    return "\n\n".join(parts)
 
 
 # ##################################################################
@@ -175,12 +168,18 @@ class CodexProvider(Provider):
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> Response | StructuredResponse:
         if shutil.which("codex") is None:
             raise AgentError("codex CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
-        prompt = _build_prompt(messages, schema)
+        prompt = _build_prompt(messages)
+        # For structured output, append file-writing instructions
+        out_filename: str | None = None
+        if schema is not None:
+            out_filename = schema_filename()
+            prompt += schema_instructions(schema, out_filename)
+
         conversation_id = uuid4()
         turn_id = uuid4()
 
@@ -197,14 +196,15 @@ class CodexProvider(Provider):
         text, usage = _parse_jsonl_response(stdout)
 
         if schema is not None:
+            import tempfile
+            tmp_dir = tempfile.mkdtemp(prefix="codex-structured-")
             try:
-                parsed_json = parse_json_from_llm(text)
-                parsed_instance = schema.model_validate(parsed_json)
+                parsed_instance = extract_result(schema, out_filename or "", tmp_dir, text)
             except Exception as exc:
-                raise AgentError(
-                    f"Failed to parse structured response: {exc}",
-                    kind=ErrorKind.INVALID_REQUEST,
-                ) from exc
+                raise AgentError(str(exc), kind=ErrorKind.INTERNAL) from exc
+            finally:
+                import shutil as _shutil
+                _shutil.rmtree(tmp_dir, ignore_errors=True)
             return StructuredResponse(
                 text=text,
                 model_used=model,
@@ -230,7 +230,7 @@ class CodexProvider(Provider):
         messages: list[Message],
         model: ModelInfo,
         *,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> AsyncIterator[str]:
         if shutil.which("codex") is None:
             raise AgentError("codex CLI not found", kind=ErrorKind.NOT_AVAILABLE)

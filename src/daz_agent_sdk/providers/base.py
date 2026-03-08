@@ -44,7 +44,7 @@ class Provider(ABC):
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> Response | StructuredResponse: ...
 
     # ##################################################################
@@ -59,7 +59,7 @@ class Provider(ABC):
         messages: list[Message],
         model: ModelInfo,
         *,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> AsyncIterator[str]: ...
 
     # ##################################################################

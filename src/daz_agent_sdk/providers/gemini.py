@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Type
 from uuid import uuid4
 
 from daz_agent_sdk.providers.base import Provider
+from daz_agent_sdk.structured import extract_result, schema_filename, schema_instructions
 from daz_agent_sdk.types import (
     AgentError,
     Capability,
@@ -18,7 +19,6 @@ from daz_agent_sdk.types import (
     StructuredResponse,
     T,
     Tier,
-    parse_json_from_llm,
 )
 
 
@@ -81,7 +81,7 @@ def _classify_error(err: Exception) -> ErrorKind:
 # ##################################################################
 # build prompt
 # combine message history into a single prompt string for the gemini CLI
-def _build_prompt(messages: list[Message], schema: Type[T] | None = None) -> str:
+def _build_prompt(messages: list[Message]) -> str:
     parts: list[str] = []
     for msg in messages:
         if msg.role == "system":
@@ -91,12 +91,6 @@ def _build_prompt(messages: list[Message], schema: Type[T] | None = None) -> str
         elif msg.role == "assistant":
             parts.append(f"[Previous assistant response]\n{msg.content}")
     prompt = "\n\n".join(parts)
-    if schema is not None:
-        schema_json = schema.model_json_schema()
-        prompt += (
-            "\n\nReturn ONLY valid JSON matching this schema, no other text:\n"
-            f"```json\n{json.dumps(schema_json, indent=2)}\n```"
-        )
     return prompt
 
 
@@ -154,12 +148,19 @@ class GeminiProvider(Provider):
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> Response | StructuredResponse:
         if shutil.which("gemini") is None:
             raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
-        prompt = _build_prompt(messages, schema)
+        prompt = _build_prompt(messages)
+        # For structured output, append file-writing instructions
+        # (gemini can't write files, but the instructions frame the output format)
+        out_filename: str | None = None
+        if schema is not None:
+            out_filename = schema_filename()
+            prompt += schema_instructions(schema, out_filename)
+
         conversation_id = uuid4()
         turn_id = uuid4()
 
@@ -195,14 +196,16 @@ class GeminiProvider(Provider):
                     break
 
         if schema is not None:
+            import tempfile
+            # Gemini can't write files — extract from response text using shared logic
+            tmp_dir = tempfile.mkdtemp(prefix="gemini-structured-")
             try:
-                parsed_json = parse_json_from_llm(response_text)
-                parsed_obj = schema.model_validate(parsed_json)
+                parsed_obj = extract_result(schema, out_filename or "", tmp_dir, response_text)
             except Exception as exc:
-                raise AgentError(
-                    f"Failed to parse structured response: {exc}",
-                    kind=ErrorKind.INVALID_REQUEST,
-                ) from exc
+                raise AgentError(str(exc), kind=ErrorKind.INTERNAL) from exc
+            finally:
+                import shutil as _shutil
+                _shutil.rmtree(tmp_dir, ignore_errors=True)
             return StructuredResponse(
                 text=response_text,
                 model_used=model,
@@ -228,12 +231,12 @@ class GeminiProvider(Provider):
         messages: list[Message],
         model: ModelInfo,
         *,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> AsyncIterator[str]:
         if shutil.which("gemini") is None:
             raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
-        prompt = _build_prompt(messages, schema=None)
+        prompt = _build_prompt(messages)
         proc = await asyncio.create_subprocess_exec(
             "gemini", "-p", "", "-m", model.model_id, "-o", "stream-json",
             stdin=asyncio.subprocess.PIPE,
