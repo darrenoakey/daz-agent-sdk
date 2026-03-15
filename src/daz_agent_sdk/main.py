@@ -81,7 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
     img_p.add_argument("--output", default=None, help="Output file path")
     img_p.add_argument("--image", default=None, help="Input image for editing (img2img)")
     img_p.add_argument("--transparent", action="store_true", help="Remove background")
-    img_p.add_argument("--provider", default=None, help="Image provider (default: nano-banana-2, or 'mflux')")
+    img_p.add_argument("--provider", default=None, help="Image provider (default: mflux, or 'nano-banana-2')")
 
     # models
     models_p = sub.add_parser("models", help="List available models")

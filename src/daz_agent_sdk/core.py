@@ -155,10 +155,10 @@ class Agent:
 
     # ##################################################################
     # image
-    # generate an image from a text prompt using Nano Banana 2 via
-    # the Gemini API. width and height are required. output path is
-    # optional; a temp file is used when omitted. transparent triggers
-    # background removal via remove-background subprocess.
+    # generate an image from a text prompt using mflux z-image-turbo
+    # (default) or Nano Banana 2 via Gemini API. width and height are
+    # required. output path is optional; a temp file is used when omitted.
+    # transparent triggers background removal via BiRefNet.
     async def image(
         self,
         prompt: str,

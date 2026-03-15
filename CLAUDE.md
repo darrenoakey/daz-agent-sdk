@@ -35,7 +35,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 | Capability | Module |
 |------------|--------|
-| Image | `capabilities/image.py` — Nano Banana 2 (Gemini API) default, optional mflux local provider, inline BiRefNet background removal |
+| Image | `capabilities/image.py` — mflux Z-Image-Turbo (local) default, optional Nano Banana 2 (Gemini API) provider, inline BiRefNet background removal |
 | TTS | `capabilities/tts.py` — subprocess to `tts` |
 | STT | `capabilities/stt.py` — subprocess to `whisper` |
 
@@ -50,14 +50,28 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
 - `./run install` command installs editable package system-wide
 - 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)
-- Image generation: `provider=None` (default) uses Nano Banana 2 via Gemini API, `provider="mflux"` uses local mflux
+- Image generation: `provider=None` (default) uses mflux Z-Image-Turbo locally, `provider="nano-banana-2"` uses Gemini API
 - BiRefNet background removal is inline (no subprocess) — requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
 - BiRefNet model cached as module-level singleton (`_birefnet_model`), loaded with `.float()` for CPU compatibility
 - `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally
 - Claude provider `_collect_response` handles `ResultMessage.result` (definitive final answer in agentic mode) separately from `AssistantMessage` `TextBlock`s. When `cwd` is set, Claude uses tools and `AssistantMessage` may only contain `ToolUseBlock`s with no text.
-- mflux v0.16.6+ moved `Flux1` and `Config` to `mflux.models.flux.variants.txt2img.flux`, requires `ModelConfig.schnell()` from `mflux.models.common.config.model_config`
+- mflux Z-Image-Turbo uses `ZImageTurbo` from `mflux.models.z_image` (NOT `Flux1` — that's for FLUX.1 schnell/dev only). `generate_image()` returns `GeneratedImage` (not PIL), save with `.save(path=..., overwrite=True)`
 - Exclude `image_test.py` from normal test runs (`--ignore`) — mflux test downloads multi-GB model
 - Codex JSONL events: `item.completed` with `item.type=="agent_message"` carries response text; `turn.failed` and `error` events carry error messages; pipe prompt via stdin with `codex exec - --json -m MODEL -s read-only --ephemeral`
 - Gemini CLI JSON: `-o json` returns `{"response": "text", "stats": {...}}`; `-o stream-json` emits JSONL with `type=message role=assistant` for chunks and `type=result` for completion
 - Codex models with ChatGPT auth: `gpt-5.3-codex` works, `o4-mini` and `gpt-4.1-nano` do NOT; `gpt-4.1` works
 - mflux package lacks `py.typed` marker — pyright can't resolve imports statically; use `# pyright: ignore[reportMissingImports]` on mflux import lines
+
+## Go Port
+
+Full Go implementation in `go/` directory. See `go/README.md` for complete documentation.
+
+- **Run tests**: `cd go && go test ./... -short`
+- **Vet**: `cd go && go vet ./...`
+- **Build CLI**: `cd go/cmd/agent-sdk && go build -o agent-sdk .`
+- **Module**: `github.com/darrenoakey/daz-agent-sdk/go`
+- Image gen uses Ollama HTTP (`x/z-image-turbo`) instead of mflux — pure Go, no Python deps
+- TTS/STT use same CLI subprocesses as Python (tts, whisper)
+- Provider interface in root package, implementations in `provider/` subpackage
+- Capabilities in `capability/` subpackage wired to Agent via function fields (avoids circular imports)
+- 102 tests, all passing

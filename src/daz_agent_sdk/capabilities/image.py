@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from daz_agent_sdk.config import Config, load_config
+from daz_agent_sdk.config import Config, get_image_steps, load_config
 from daz_agent_sdk.logging_ import ConversationLogger
 from daz_agent_sdk.types import AgentError, Capability, ErrorKind, ImageResult, ModelInfo, Tier
 
@@ -167,7 +167,9 @@ async def _generate_mflux(
     *,
     width: int,
     height: int,
+    steps: int,
     output_path: Path,
+    input_image: Path | None = None,
     timeout: float = 120.0,
 ) -> None:
     try:
@@ -179,26 +181,20 @@ async def _generate_mflux(
         ) from exc
 
     def _call() -> None:
-        from mflux.models.common.config.model_config import ModelConfig  # pyright: ignore[reportMissingImports]
-        from mflux.models.flux.variants.txt2img.flux import Config as MfluxConfig  # pyright: ignore[reportMissingImports]
-        from mflux.models.flux.variants.txt2img.flux import Flux1  # pyright: ignore[reportMissingImports]
+        from mflux.models.z_image import ZImageTurbo  # pyright: ignore[reportMissingImports]
 
-        model_config = ModelConfig.schnell()
-        flux = Flux1(
-            quantize=8,
-            model_config=model_config,
-        )
-        image = flux.generate_image(
-            seed=42,
-            prompt=prompt,
-            config=MfluxConfig(
-                model_config=model_config,
-                num_inference_steps=2,
-                width=width,
-                height=height,
-            ),
-        )
-        image.save(path=str(output_path))
+        model = ZImageTurbo(quantize=8)
+        gen_kwargs: dict[str, Any] = {
+            "seed": 42,
+            "prompt": prompt,
+            "num_inference_steps": steps,
+            "width": width,
+            "height": height,
+        }
+        if input_image is not None:
+            gen_kwargs["image_path"] = str(input_image)
+        image = model.generate_image(**gen_kwargs)
+        image.save(path=str(output_path), overwrite=True)  # pyright: ignore[reportCallIssue]
 
     loop = asyncio.get_event_loop()
     try:
@@ -233,7 +229,7 @@ async def generate_image(
     logger: ConversationLogger | None = None,
     conversation_id: UUID | None = None,
 ) -> ImageResult:
-    _ = config or load_config()  # ensure config is loaded
+    cfg = config or load_config()
 
     # validate input image if provided
     input_image_path: Path | None = None
@@ -258,25 +254,30 @@ async def generate_image(
 
     conv_id = conversation_id or uuid.uuid4()
 
+    effective_provider = provider or "mflux"
+
     if logger is not None:
         logger.log_event(
             "image_request",
             prompt=prompt,
             width=width,
             height=height,
-            model=_NANO_BANANA_MODEL.model_id if provider != "mflux" else "mflux-schnell",
+            model="mflux-z-image-turbo" if effective_provider == "mflux" else _NANO_BANANA_MODEL.model_id,
             tier=tier.value,
             transparent=transparent,
-            provider=provider or "nano-banana-2",
+            provider=effective_provider,
         )
 
-    # mflux provider path
-    if provider == "mflux":
+    # default: mflux provider path
+    if effective_provider == "mflux":
+        steps = get_image_steps(tier, cfg)
         await _generate_mflux(
             prompt,
             width=width,
             height=height,
+            steps=steps,
             output_path=output_path,
+            input_image=input_image_path,
             timeout=timeout,
         )
         if transparent:
@@ -287,8 +288,8 @@ async def generate_image(
             path=output_path,
             model_used=ModelInfo(
                 provider="mflux",
-                model_id="schnell",
-                display_name="mflux schnell",
+                model_id="z-image-turbo",
+                display_name="mflux z-image-turbo",
                 capabilities=frozenset({Capability.IMAGE}),
                 tier=Tier.HIGH,
                 supports_streaming=False,
@@ -301,9 +302,8 @@ async def generate_image(
             height=height,
         )
 
-    # default: Nano Banana 2 via Gemini API
+    # Nano Banana 2 via Gemini API (opt-in with provider="nano-banana-2")
     aspect_ratio = _closest_aspect_ratio(width, height)
-    image_size = _image_size(width, height)
 
     try:
         from google import genai  # type: ignore[attr-defined]
@@ -345,7 +345,6 @@ async def generate_image(
                 response_modalities=["IMAGE"],
                 image_config=types.ImageConfig(
                     aspect_ratio=aspect_ratio,
-                    image_size=image_size,
                 ),
             ),
         )

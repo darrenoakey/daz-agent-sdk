@@ -74,17 +74,17 @@ def test_default_image_model(tmp_path: Path) -> None:
 
 def test_default_image_steps_very_high(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.tiers["very_high"].steps == 32
+    assert cfg.image.tiers["very_high"].steps == 8
 
 
 def test_default_image_steps_high(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.tiers["high"].steps == 16
+    assert cfg.image.tiers["high"].steps == 3
 
 
 def test_default_image_steps_medium(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.tiers["medium"].steps == 8
+    assert cfg.image.tiers["medium"].steps == 3
 
 
 def test_default_image_steps_low(tmp_path: Path) -> None:
@@ -270,17 +270,17 @@ def test_get_tier_chain_returns_copy(tmp_path: Path) -> None:
 # verify correct step count for each tier
 def test_get_image_steps_very_high(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert get_image_steps(Tier.VERY_HIGH, cfg) == 32
+    assert get_image_steps(Tier.VERY_HIGH, cfg) == 8
 
 
 def test_get_image_steps_high(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert get_image_steps(Tier.HIGH, cfg) == 16
+    assert get_image_steps(Tier.HIGH, cfg) == 3
 
 
 def test_get_image_steps_medium(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert get_image_steps(Tier.MEDIUM, cfg) == 8
+    assert get_image_steps(Tier.MEDIUM, cfg) == 3
 
 
 def test_get_image_steps_low(tmp_path: Path) -> None:

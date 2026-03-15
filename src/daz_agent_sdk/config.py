@@ -47,9 +47,9 @@ class ImageConfig:
     # fill default tier step counts if not provided
     def __post_init__(self) -> None:
         defaults = {
-            "very_high": ImageTierConfig(steps=32),
-            "high": ImageTierConfig(steps=16),
-            "medium": ImageTierConfig(steps=8),
+            "very_high": ImageTierConfig(steps=8),
+            "high": ImageTierConfig(steps=3),
+            "medium": ImageTierConfig(steps=3),
             "low": ImageTierConfig(steps=2),
         }
         for tier_key, default in defaults.items():
