@@ -18,7 +18,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Type
+from typing import Type, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ from daz_agent_sdk.types import parse_json_from_llm
 
 _logger = logging.getLogger(__name__)
 
-T = type  # just for readability in signatures
+T = TypeVar("T", bound=BaseModel)
 
 
 def schema_filename() -> str:
@@ -62,11 +62,11 @@ def ensure_cwd(cwd: str | Path | None) -> tuple[str, bool]:
 
 
 def extract_result(
-    schema_cls: Type[BaseModel],
+    schema_cls: Type[T],
     filename: str,
     cwd: str,
     response_text: str,
-) -> BaseModel:
+) -> T:
     """Extract and validate structured output.
 
     1. Check if the file was written by the AI

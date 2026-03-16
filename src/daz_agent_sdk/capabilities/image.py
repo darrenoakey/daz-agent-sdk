@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import gc
 import os
 import tempfile
@@ -161,6 +162,11 @@ async def _remove_background(image_path: Path, *, timeout: float = 120.0) -> Non
 
 
 # ##################################################################
+# system-wide lock for mflux — only one generation at a time across all processes
+_MFLUX_LOCK_PATH = Path(tempfile.gettempdir()) / "daz-agent-sdk-mflux.lock"
+
+
+# ##################################################################
 # mflux generation path
 async def _generate_mflux(
     prompt: str,
@@ -183,18 +189,24 @@ async def _generate_mflux(
     def _call() -> None:
         from mflux.models.z_image import ZImageTurbo  # pyright: ignore[reportMissingImports]
 
-        model = ZImageTurbo(quantize=8)
-        gen_kwargs: dict[str, Any] = {
-            "seed": 42,
-            "prompt": prompt,
-            "num_inference_steps": steps,
-            "width": width,
-            "height": height,
-        }
-        if input_image is not None:
-            gen_kwargs["image_path"] = str(input_image)
-        image = model.generate_image(**gen_kwargs)
-        image.save(path=str(output_path), overwrite=True)  # pyright: ignore[reportCallIssue]
+        # system-wide exclusive lock — blocks until no other process is generating
+        with open(_MFLUX_LOCK_PATH, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                model = ZImageTurbo(quantize=8)
+                gen_kwargs: dict[str, Any] = {
+                    "seed": 42,
+                    "prompt": prompt,
+                    "num_inference_steps": steps,
+                    "width": width,
+                    "height": height,
+                }
+                if input_image is not None:
+                    gen_kwargs["image_path"] = str(input_image)
+                image = model.generate_image(**gen_kwargs)
+                image.save(path=str(output_path), overwrite=True)  # pyright: ignore[reportCallIssue]
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
     loop = asyncio.get_event_loop()
     try:

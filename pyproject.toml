@@ -39,6 +39,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+daz_agent_sdk = ["py.typed"]
+
 [tool.setuptools.dynamic]
 version = {attr = "daz_agent_sdk.__version__"}
 

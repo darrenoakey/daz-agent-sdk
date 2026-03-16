@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-
-_logger = logging.getLogger(__name__)
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel
+
+import claude_agent_sdk as _sdk
 
 from daz_agent_sdk.structured import ensure_cwd, extract_result, schema_filename, schema_instructions
 from daz_agent_sdk.types import (
@@ -24,6 +24,7 @@ from daz_agent_sdk.types import (
     Tier,
 )
 
+_logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 _CLAUDE_MODELS = [
@@ -85,10 +86,6 @@ def _classify_error(err: Exception) -> ErrorKind:
         return ErrorKind.INVALID_REQUEST
     return ErrorKind.INTERNAL
 
-
-# ##################################################################
-# import sdk
-import claude_agent_sdk as _sdk
 
 
 # ##################################################################
