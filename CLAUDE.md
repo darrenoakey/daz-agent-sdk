@@ -61,6 +61,9 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Gemini CLI JSON: `-o json` returns `{"response": "text", "stats": {...}}`; `-o stream-json` emits JSONL with `type=message role=assistant` for chunks and `type=result` for completion
 - Codex models with ChatGPT auth: `gpt-5.3-codex` works, `o4-mini` and `gpt-4.1-nano` do NOT; `gpt-4.1` works
 - mflux package lacks `py.typed` marker — pyright can't resolve imports statically; use `# pyright: ignore[reportMissingImports]` on mflux import lines
+- mflux generation uses system-wide `fcntl.flock` at `/tmp/daz-agent-sdk-mflux.lock` — only one generation across all processes at a time
+- Package ships `py.typed` (PEP 561) — callers get full type info; `pyproject.toml` has `[tool.setuptools.package-data]` to include it in wheel
+- `./run deploy` handles version bump automatically — don't bump version manually before running it
 
 ## Go Port
 
