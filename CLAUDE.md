@@ -35,7 +35,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 | Capability | Module |
 |------------|--------|
-| Image | `capabilities/image.py` — mflux Z-Image-Turbo (local) default, optional Nano Banana 2 (Gemini API) provider, inline BiRefNet background removal |
+| Image | `capabilities/image.py` — Spark (default, CUDA FLUX.1-schnell on spark:8100), mflux Z-Image-Turbo (local Apple Silicon), Nano Banana 2 (Gemini API), inline BiRefNet background removal |
 | TTS | `capabilities/tts.py` — subprocess to `tts` |
 | STT | `capabilities/stt.py` — subprocess to `whisper` |
 
@@ -50,7 +50,8 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
 - `./run install` command installs editable package system-wide
 - 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)
-- Image generation: `provider=None` (default) uses mflux Z-Image-Turbo locally, `provider="nano-banana-2"` uses Gemini API
+- Image generation: `provider=None` (default) uses Spark (CUDA FLUX.1-schnell at spark:8100), `provider="mflux"` uses local Apple Silicon, `provider="nano-banana-2"` uses Gemini API
+- Spark image server runs on spark (GB10 CUDA) via systemd (`spark-images.service`), source at `~/src/images` on spark, handles transparent server-side
 - BiRefNet background removal is inline (no subprocess) — requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
 - BiRefNet model cached as module-level singleton (`_birefnet_model`), loaded with `.float()` for CPU compatibility
 - `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally

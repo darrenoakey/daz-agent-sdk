@@ -122,6 +122,85 @@ def test_generate_transparent_image():
 
 
 # ##################################################################
+# spark provider test — remote CUDA GPU
+
+
+def _spark_reachable() -> bool:
+    """Check if the spark image server is running."""
+    import json
+    from urllib.request import urlopen
+    from urllib.error import URLError
+    try:
+        with urlopen("http://spark:8100/health", timeout=5) as resp:
+            data = json.loads(resp.read())
+            return data.get("status") == "ok"
+    except (URLError, OSError):
+        return False
+
+
+def test_generate_spark_image():
+    """Generate a 512x512 image via spark provider."""
+    if not _spark_reachable():
+        pytest.skip("Spark image server not reachable")
+
+    result = asyncio.run(
+        generate_image(
+            "A green triangle on white background",
+            width=512,
+            height=512,
+            provider="spark",
+            timeout=300.0,
+        )
+    )
+
+    assert result.path.exists()
+    assert result.path.stat().st_size > 1000
+    assert result.model_used.provider == "spark"
+    assert result.model_used.model_id == "z-image-turbo"
+    header = result.path.read_bytes()[:4]
+    assert header == b"\x89PNG"
+
+
+def test_generate_spark_transparent():
+    """Generate a transparent image via spark (server-side BiRefNet)."""
+    if not _spark_reachable():
+        pytest.skip("Spark image server not reachable")
+
+    result = asyncio.run(
+        generate_image(
+            "A red fox, white background",
+            width=512,
+            height=512,
+            provider="spark",
+            transparent=True,
+            timeout=300.0,
+        )
+    )
+
+    assert result.path.exists()
+    from PIL import Image
+    with Image.open(result.path) as img:
+        assert img.mode == "RGBA"
+
+
+def test_generate_spark_default_provider():
+    """Verify spark is now the default provider."""
+    if not _spark_reachable():
+        pytest.skip("Spark image server not reachable")
+
+    result = asyncio.run(
+        generate_image(
+            "A blue circle",
+            width=512,
+            height=512,
+            timeout=300.0,
+        )
+    )
+
+    assert result.model_used.provider == "spark"
+
+
+# ##################################################################
 # mflux provider test — skip if not installed
 
 

@@ -222,9 +222,122 @@ async def _generate_mflux(
 
 
 # ##################################################################
+# spark model info
+_SPARK_MODEL = ModelInfo(
+    provider="spark",
+    model_id="z-image-turbo",
+    display_name="Spark Z-Image Turbo (FLUX.1-schnell)",
+    capabilities=frozenset({Capability.IMAGE}),
+    tier=Tier.HIGH,
+    supports_streaming=False,
+    supports_structured=False,
+    supports_conversation=False,
+)
+
+# ##################################################################
+# spark image server — CUDA-accelerated FLUX.1-schnell on remote GPU
+_SPARK_DEFAULT_URL = "http://spark:8100"
+
+
+async def _generate_spark(
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    steps: int,
+    output_path: Path,
+    input_image: Path | None = None,
+    transparent: bool = False,
+    timeout: float = 300.0,
+    base_url: str | None = None,
+) -> None:
+    import base64
+    import json
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError
+
+    url = base_url or os.environ.get("SPARK_IMAGE_URL") or _SPARK_DEFAULT_URL
+
+    def _call() -> None:
+        if input_image is not None:
+            # img2img via multipart form
+            import mimetypes
+            boundary = "----AgentSDKBoundary"
+            body = b""
+            fields = {
+                "prompt": prompt,
+                "model": "z-image-turbo",
+                "width": str(width),
+                "height": str(height),
+                "steps": str(steps),
+                "transparent": str(transparent).lower(),
+            }
+            for k, v in fields.items():
+                body += f"--{boundary}\r\n".encode()
+                body += f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode()
+                body += f"{v}\r\n".encode()
+            # image file
+            mime = mimetypes.guess_type(str(input_image))[0] or "image/png"
+            body += f"--{boundary}\r\n".encode()
+            body += f'Content-Disposition: form-data; name="image"; filename="{input_image.name}"\r\n'.encode()
+            body += f"Content-Type: {mime}\r\n\r\n".encode()
+            body += input_image.read_bytes()
+            body += f"\r\n--{boundary}--\r\n".encode()
+            req = Request(
+                f"{url}/v1/images/edit",
+                data=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                method="POST",
+            )
+        else:
+            # text-to-image via JSON
+            payload = json.dumps({
+                "prompt": prompt,
+                "model": "z-image-turbo",
+                "width": width,
+                "height": height,
+                "steps": steps,
+                "transparent": transparent,
+            }).encode()
+            req = Request(
+                f"{url}/v1/images/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+        except URLError as e:
+            raise AgentError(
+                f"Spark image server unreachable at {url}: {e}",
+                kind=ErrorKind.NOT_AVAILABLE,
+            ) from e
+
+        if "image" not in data:
+            raise AgentError(
+                f"Spark returned no image data: {data}",
+                kind=ErrorKind.INTERNAL,
+            )
+        output_path.write_bytes(base64.b64decode(data["image"]))
+
+    loop = asyncio.get_event_loop()
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(None, _call),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        raise AgentError(
+            f"Spark image generation timed out after {timeout}s",
+            kind=ErrorKind.TIMEOUT,
+        )
+
+
+# ##################################################################
 # generate image
-# generates an image using Nano Banana 2 (default) or mflux.
-# reads GEMINI_API_KEY from the environment (or keyring) for Nano Banana 2.
+# generates an image using spark (default), mflux, or Nano Banana 2.
 # saves the result to the output path (or a temp file).
 async def generate_image(
     prompt: str,
@@ -266,21 +379,52 @@ async def generate_image(
 
     conv_id = conversation_id or uuid.uuid4()
 
-    effective_provider = provider or "mflux"
+    effective_provider = provider or "spark"
 
     if logger is not None:
+        model_name = {
+            "spark": _SPARK_MODEL.model_id,
+            "mflux": "mflux-z-image-turbo",
+        }.get(effective_provider, _NANO_BANANA_MODEL.model_id)
         logger.log_event(
             "image_request",
             prompt=prompt,
             width=width,
             height=height,
-            model="mflux-z-image-turbo" if effective_provider == "mflux" else _NANO_BANANA_MODEL.model_id,
+            model=model_name,
             tier=tier.value,
             transparent=transparent,
             provider=effective_provider,
         )
 
-    # default: mflux provider path
+    # spark provider path — CUDA-accelerated remote GPU
+    if effective_provider == "spark":
+        steps = get_image_steps(tier, cfg)
+        spark_url = cfg.providers.get("spark", {}).get("base_url") if cfg else None
+        await _generate_spark(
+            prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            output_path=output_path,
+            input_image=input_image_path,
+            transparent=transparent,
+            timeout=timeout,
+            base_url=spark_url,
+        )
+        # spark handles transparent server-side, no local post-processing needed
+        if logger is not None:
+            logger.log_event("image_complete", path=str(output_path))
+        return ImageResult(
+            path=output_path,
+            model_used=_SPARK_MODEL,
+            conversation_id=conv_id,
+            prompt=prompt,
+            width=width,
+            height=height,
+        )
+
+    # mflux provider path (Apple Silicon local)
     if effective_provider == "mflux":
         steps = get_image_steps(tier, cfg)
         await _generate_mflux(
