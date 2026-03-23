@@ -235,6 +235,96 @@ _SPARK_MODEL = ModelInfo(
 )
 
 # ##################################################################
+# arbiter-based background removal on spark GPU
+_ARBITER_DEFAULT_URL = "http://spark:8400"
+
+
+async def _remove_background_spark(
+    image_path: Path,
+    *,
+    timeout: float = 120.0,
+    base_url: str | None = None,
+) -> None:
+    import base64
+    import json
+    import time
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError
+
+    url = base_url or os.environ.get("ARBITER_URL") or _ARBITER_DEFAULT_URL
+
+    def _call() -> None:
+        # submit background-remove job
+        image_b64 = base64.b64encode(image_path.read_bytes()).decode()
+        payload = json.dumps({
+            "type": "background-remove",
+            "params": {"image": image_b64},
+        }).encode()
+        req = Request(
+            f"{url}/v1/jobs",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+        except URLError as e:
+            raise AgentError(
+                f"Arbiter unreachable at {url}: {e}",
+                kind=ErrorKind.NOT_AVAILABLE,
+            ) from e
+
+        job_id = data.get("job_id")
+        if not job_id:
+            raise AgentError(
+                f"Arbiter returned no job_id: {data}",
+                kind=ErrorKind.INTERNAL,
+            )
+
+        # poll until done
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            poll_req = Request(f"{url}/v1/jobs/{job_id}", method="GET")
+            with urlopen(poll_req, timeout=10) as resp:
+                status_data = json.loads(resp.read())
+            status = status_data.get("status")
+            if status == "completed":
+                result = status_data.get("result", {})
+                image_b64_out = result.get("image") or result.get("data")
+                if not image_b64_out:
+                    raise AgentError(
+                        f"Arbiter background-remove returned no image: {status_data}",
+                        kind=ErrorKind.INTERNAL,
+                    )
+                image_path.write_bytes(base64.b64decode(image_b64_out))
+                return
+            if status == "failed":
+                raise AgentError(
+                    f"Arbiter background-remove failed: {status_data.get('error')}",
+                    kind=ErrorKind.INTERNAL,
+                )
+            time.sleep(1)
+
+        raise AgentError(
+            f"Arbiter background-remove timed out after {timeout}s",
+            kind=ErrorKind.TIMEOUT,
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(None, _call),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        raise AgentError(
+            f"Arbiter background-remove timed out after {timeout}s",
+            kind=ErrorKind.TIMEOUT,
+        )
+
+
+# ##################################################################
 # spark image server — CUDA-accelerated FLUX.1-schnell on remote GPU
 _SPARK_DEFAULT_URL = "http://spark:8100"
 
@@ -412,7 +502,9 @@ async def generate_image(
             timeout=timeout,
             base_url=spark_url,
         )
-        # spark handles transparent server-side, no local post-processing needed
+        if transparent:
+            arbiter_url = cfg.providers.get("arbiter", {}).get("base_url") if cfg else None
+            await _remove_background_spark(output_path, timeout=timeout, base_url=arbiter_url)
         if logger is not None:
             logger.log_event("image_complete", path=str(output_path))
         return ImageResult(
