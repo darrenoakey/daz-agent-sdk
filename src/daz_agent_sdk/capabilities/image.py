@@ -426,87 +426,55 @@ async def _generate_spark(
 
 
 # ##################################################################
-# generate image
-# generates an image using spark (default), mflux, or Nano Banana 2.
-# saves the result to the output path (or a temp file).
-async def generate_image(
+# mflux model info (used by _generate_one)
+_MFLUX_MODEL = ModelInfo(
+    provider="mflux",
+    model_id="z-image-turbo",
+    display_name="mflux z-image-turbo",
+    capabilities=frozenset({Capability.IMAGE}),
+    tier=Tier.HIGH,
+    supports_streaming=False,
+    supports_structured=False,
+    supports_conversation=False,
+)
+
+
+# ##################################################################
+# generate with one provider
+# dispatches to the correct backend and returns an ImageResult.
+# raises AgentError on failure — caller handles fallback.
+async def _generate_one(
+    provider_name: str,
     prompt: str,
     *,
     width: int,
     height: int,
-    output: str | Path | None = None,
-    image: str | Path | None = None,
-    tier: Tier = Tier.HIGH,
-    transparent: bool = False,
-    timeout: float = 120.0,
-    provider: str | None = None,
-    config: Config | None = None,
-    logger: ConversationLogger | None = None,
-    conversation_id: UUID | None = None,
+    output_path: Path,
+    input_image: Path | None,
+    tier: Tier,
+    transparent: bool,
+    timeout: float,
+    cfg: Config,
+    conv_id: UUID,
 ) -> ImageResult:
-    cfg = config or load_config()
-
-    # validate input image if provided
-    input_image_path: Path | None = None
-    if image is not None:
-        input_image_path = Path(image)
-        if not input_image_path.exists():
-            raise AgentError(
-                f"Input image not found: {input_image_path}",
-                kind=ErrorKind.INVALID_REQUEST,
-            )
-
-    if output is None:
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".png",
-            prefix="agent_sdk_img_",
-            delete=False,
-        )
-        tmp.close()
-        output_path = Path(tmp.name)
-    else:
-        output_path = Path(output)
-
-    conv_id = conversation_id or uuid.uuid4()
-
-    effective_provider = provider or "spark"
-
-    if logger is not None:
-        model_name = {
-            "spark": _SPARK_MODEL.model_id,
-            "mflux": "mflux-z-image-turbo",
-        }.get(effective_provider, _NANO_BANANA_MODEL.model_id)
-        logger.log_event(
-            "image_request",
-            prompt=prompt,
-            width=width,
-            height=height,
-            model=model_name,
-            tier=tier.value,
-            transparent=transparent,
-            provider=effective_provider,
-        )
-
-    # spark provider path — CUDA-accelerated remote GPU
-    if effective_provider == "spark":
+    # spark — CUDA-accelerated remote GPU
+    if provider_name == "spark":
         steps = get_image_steps(tier, cfg)
-        spark_url = cfg.providers.get("spark", {}).get("base_url") if cfg else None
+        spark_url = cfg.providers.get("spark", {}).get("base_url")
         await _generate_spark(
             prompt,
             width=width,
             height=height,
             steps=steps,
             output_path=output_path,
-            input_image=input_image_path,
+            input_image=input_image,
             transparent=transparent,
             timeout=timeout,
             base_url=spark_url,
         )
         if transparent:
-            arbiter_url = cfg.providers.get("arbiter", {}).get("base_url") if cfg else None
+            arbiter_url = cfg.providers.get("arbiter", {}).get("base_url")
             await _remove_background_spark(output_path, timeout=timeout, base_url=arbiter_url)
-        if logger is not None:
-            logger.log_event("image_complete", path=str(output_path))
         return ImageResult(
             path=output_path,
             model_used=_SPARK_MODEL,
@@ -516,8 +484,8 @@ async def generate_image(
             height=height,
         )
 
-    # mflux provider path (Apple Silicon local)
-    if effective_provider == "mflux":
+    # mflux — local Apple Silicon
+    if provider_name == "mflux":
         steps = get_image_steps(tier, cfg)
         await _generate_mflux(
             prompt,
@@ -525,32 +493,52 @@ async def generate_image(
             height=height,
             steps=steps,
             output_path=output_path,
-            input_image=input_image_path,
+            input_image=input_image,
             timeout=timeout,
         )
         if transparent:
             await _remove_background(output_path, timeout=timeout)
-        if logger is not None:
-            logger.log_event("image_complete", path=str(output_path))
         return ImageResult(
             path=output_path,
-            model_used=ModelInfo(
-                provider="mflux",
-                model_id="z-image-turbo",
-                display_name="mflux z-image-turbo",
-                capabilities=frozenset({Capability.IMAGE}),
-                tier=Tier.HIGH,
-                supports_streaming=False,
-                supports_structured=False,
-                supports_conversation=False,
-            ),
+            model_used=_MFLUX_MODEL,
             conversation_id=conv_id,
             prompt=prompt,
             width=width,
             height=height,
         )
 
-    # Nano Banana 2 via Gemini API (opt-in with provider="nano-banana-2")
+    # nano-banana-2 — Gemini API
+    if provider_name == "nano-banana-2":
+        return await _generate_nano_banana(
+            prompt,
+            width=width,
+            height=height,
+            output_path=output_path,
+            input_image=input_image,
+            transparent=transparent,
+            timeout=timeout,
+            conv_id=conv_id,
+        )
+
+    raise AgentError(
+        f"Unknown image provider: {provider_name}",
+        kind=ErrorKind.INVALID_REQUEST,
+    )
+
+
+# ##################################################################
+# nano banana 2 generation path
+async def _generate_nano_banana(
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    output_path: Path,
+    input_image: Path | None,
+    transparent: bool,
+    timeout: float,
+    conv_id: UUID,
+) -> ImageResult:
     aspect_ratio = _closest_aspect_ratio(width, height)
 
     try:
@@ -579,9 +567,9 @@ async def generate_image(
 
     def _call() -> bytes:
         contents: list[Any] = []
-        if input_image_path is not None:
-            image_bytes = input_image_path.read_bytes()
-            suffix = input_image_path.suffix.lower()
+        if input_image is not None:
+            image_bytes = input_image.read_bytes()
+            suffix = input_image.suffix.lower()
             mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
             mime_type = mime_map.get(suffix, "image/png")
             contents.append(types.Part(inline_data=types.Blob(data=image_bytes, mime_type=mime_type)))
@@ -634,9 +622,6 @@ async def generate_image(
     if transparent:
         await _remove_background(output_path, timeout=timeout)
 
-    if logger is not None:
-        logger.log_event("image_complete", path=str(output_path))
-
     return ImageResult(
         path=output_path,
         model_used=_NANO_BANANA_MODEL,
@@ -645,3 +630,99 @@ async def generate_image(
         width=width,
         height=height,
     )
+
+
+# ##################################################################
+# generate image
+# generates an image using the configured provider chain.
+# tries the primary provider, then each fallback from config on failure.
+async def generate_image(
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    output: str | Path | None = None,
+    image: str | Path | None = None,
+    tier: Tier = Tier.HIGH,
+    transparent: bool = False,
+    timeout: float = 120.0,
+    provider: str | None = None,
+    config: Config | None = None,
+    logger: ConversationLogger | None = None,
+    conversation_id: UUID | None = None,
+) -> ImageResult:
+    cfg = config or load_config()
+
+    # validate input image if provided
+    input_image_path: Path | None = None
+    if image is not None:
+        input_image_path = Path(image)
+        if not input_image_path.exists():
+            raise AgentError(
+                f"Input image not found: {input_image_path}",
+                kind=ErrorKind.INVALID_REQUEST,
+            )
+
+    if output is None:
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".png",
+            prefix="agent_sdk_img_",
+            delete=False,
+        )
+        tmp.close()
+        output_path = Path(tmp.name)
+    else:
+        output_path = Path(output)
+
+    conv_id = conversation_id or uuid.uuid4()
+
+    primary = provider or "spark"
+    # build provider chain: primary + configured fallbacks (excluding primary)
+    fallbacks = [fb for fb in cfg.image.fallback if fb != primary]
+    chain = [primary] + fallbacks
+
+    if logger is not None:
+        model_name = {
+            "spark": _SPARK_MODEL.model_id,
+            "mflux": "mflux-z-image-turbo",
+        }.get(primary, _NANO_BANANA_MODEL.model_id)
+        logger.log_event(
+            "image_request",
+            prompt=prompt,
+            width=width,
+            height=height,
+            model=model_name,
+            tier=tier.value,
+            transparent=transparent,
+            provider=primary,
+            fallbacks=fallbacks,
+        )
+
+    last_error: AgentError | None = None
+    for provider_name in chain:
+        try:
+            if provider_name != primary and logger is not None:
+                logger.log_event("image_fallback", provider=provider_name, reason=str(last_error))
+            result = await _generate_one(
+                provider_name,
+                prompt,
+                width=width,
+                height=height,
+                output_path=output_path,
+                input_image=input_image_path,
+                tier=tier,
+                transparent=transparent,
+                timeout=timeout,
+                cfg=cfg,
+                conv_id=conv_id,
+            )
+            if logger is not None:
+                logger.log_event("image_complete", path=str(output_path), provider=provider_name)
+            return result
+        except AgentError as err:
+            last_error = err
+            continue
+
+    # all providers failed — raise the last error
+    assert last_error is not None
+    raise last_error

@@ -51,8 +51,9 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - `./run install` command installs editable package system-wide
 - 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)
 - Image generation: `provider=None` (default) uses Spark (CUDA FLUX.1-schnell at spark:8100), `provider="mflux"` uses local Apple Silicon, `provider="nano-banana-2"` uses Gemini API
-- Spark image server runs on spark (GB10 CUDA) via systemd (`spark-images.service`), source at `~/src/images` on spark, handles transparent server-side
-- BiRefNet background removal is inline (no subprocess) — requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
+- Spark image server runs on spark (GB10 CUDA) via arbiter (`spark:8400` for jobs, `spark:8100` for direct image gen)
+- Background removal (`transparent=True`): spark provider submits `background-remove` job to arbiter (BiRefNet on GPU); mflux provider runs BiRefNet locally (CPU); arbiter returns result in `result.data` (not `result.image`)
+- Local BiRefNet fallback requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
 - BiRefNet model cached as module-level singleton (`_birefnet_model`), loaded with `.float()` for CPU compatibility
 - `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally
 - Claude provider `_collect_response` handles `ResultMessage.result` (definitive final answer in agentic mode) separately from `AssistantMessage` `TextBlock`s. When `cwd` is set, Claude uses tools and `AssistantMessage` may only contain `ToolUseBlock`s with no text.
