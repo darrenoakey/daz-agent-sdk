@@ -50,7 +50,8 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
 - `./run install` command installs editable package system-wide
 - 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)
-- Image generation: `provider=None` (default) uses Spark (CUDA FLUX.1-schnell at spark:8100), `provider="mflux"` uses local Apple Silicon, `provider="nano-banana-2"` uses Gemini API
+- Image generation: `provider=None` (default) uses Spark (CUDA FLUX.1-schnell at spark:8100), `provider="mflux"` uses local Apple Silicon, `provider="nano-banana-2"` uses Gemini API. Configurable fallback chain via `image.fallback` in config.yaml — on primary failure, tries each fallback in order
+- Image fallback refactor: `_generate_one()` dispatches per-provider, `generate_image()` loops `[primary] + fallbacks`. Each provider handles its own transparency
 - Spark image server runs on spark (GB10 CUDA) via arbiter (`spark:8400` for jobs, `spark:8100` for direct image gen)
 - Background removal (`transparent=True`): spark provider submits `background-remove` job to arbiter (BiRefNet on GPU); mflux provider runs BiRefNet locally (CPU); arbiter returns result in `result.data` (not `result.image`)
 - Local BiRefNet fallback requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)

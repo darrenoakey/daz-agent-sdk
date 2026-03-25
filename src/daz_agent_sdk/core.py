@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Type
 
-from daz_agent_sdk.capabilities.image import generate_image
+from daz_agent_sdk.capabilities.image import generate_image, _remove_background_spark
 from daz_agent_sdk.capabilities.stt import transcribe as _transcribe
 from daz_agent_sdk.capabilities.tts import synthesize_speech
 from daz_agent_sdk.config import Config, get_tier_chain, load_config
@@ -229,6 +229,21 @@ class Agent:
             timeout=timeout,
             conversation_id=uuid.uuid4(),
         )
+
+    # ##################################################################
+    # remove_background
+    # remove background from an image using BiRefNet on spark (GPU).
+    # overwrites the image in-place with a PNG with alpha channel.
+    async def remove_background(
+        self,
+        image: str | Path,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
+        image_path = Path(image)
+        arbiter_url = self._config.providers.get("arbiter", {}).get("base_url") if self._config else None
+        await _remove_background_spark(image_path, timeout=timeout, base_url=arbiter_url)
+        return image_path
 
     # ##################################################################
     # models
