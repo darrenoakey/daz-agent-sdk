@@ -18,7 +18,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - `fallback.py` — error classification + single-shot cascade / conversation backoff+cascade
 - `logging_.py` — per-conversation UUID JSONL event logger
 - `conversation.py` — multi-turn Conversation class with history, fork, stream
-- `core.py` — Agent singleton: ask, conversation, image, speak, transcribe, models
+- `core.py` — Agent singleton: ask, conversation, image, remove_background, speak, transcribe, models
 - `main.py` — CLI entry point (ask, models, image subcommands)
 - `__init__.py` — exports `agent` singleton + all public types
 

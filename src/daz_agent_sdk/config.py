@@ -99,9 +99,13 @@ class LoggingConfig:
 # ##################################################################
 # fallback single shot config
 # strategy for one-shot requests
+# max_retries: how many times to retry each provider before cascading
+# retry_base_seconds: base delay for exponential backoff (delay = base * 2^attempt)
 @dataclass
 class FallbackSingleShotConfig:
     strategy: str = "immediate_cascade"
+    max_retries: int = 3
+    retry_base_seconds: float = 2.0
 
 
 # ##################################################################
@@ -235,6 +239,8 @@ def _build_fallback_config(raw: dict[str, Any]) -> FallbackConfig:
 
     single_shot = FallbackSingleShotConfig(
         strategy=ss_raw.get("strategy", "immediate_cascade") if isinstance(ss_raw, dict) else "immediate_cascade",
+        max_retries=ss_raw.get("max_retries", 3) if isinstance(ss_raw, dict) else 3,
+        retry_base_seconds=ss_raw.get("retry_base_seconds", 2.0) if isinstance(ss_raw, dict) else 2.0,
     )
     conversation = FallbackConversationConfig(
         strategy=conv_raw.get("strategy", "backoff_then_cascade") if isinstance(conv_raw, dict) else "backoff_then_cascade",

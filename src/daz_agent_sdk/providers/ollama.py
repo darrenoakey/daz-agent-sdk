@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import AsyncIterator, Type
+from typing import Any, AsyncIterator, Type
 from uuid import uuid4
 
 import aiohttp
@@ -176,11 +176,13 @@ class OllamaProvider(Provider):
             else:
                 msg_list.insert(0, {"role": "system", "content": instruction.strip()})
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": model.model_id,
             "messages": msg_list,
             "stream": False,
         }
+        if schema is not None:
+            payload["format"] = schema.model_json_schema()
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -213,6 +215,12 @@ class OllamaProvider(Provider):
         if schema is not None:
             try:
                 parsed_json = parse_json_from_llm(text)
+                # ollama sometimes returns the JSON schema shape instead of an instance —
+                # e.g. {"properties": {"label": "POSITIVE", ...}, "type": "object"}
+                if isinstance(parsed_json, dict) and "properties" in parsed_json:
+                    props = parsed_json["properties"]
+                    if isinstance(props, dict) and all(not isinstance(v, dict) for v in props.values()):
+                        parsed_json = props
                 parsed_instance = schema.model_validate(parsed_json)
             except Exception as exc:
                 raise AgentError(

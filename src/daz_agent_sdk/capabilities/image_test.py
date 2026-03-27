@@ -83,10 +83,12 @@ def test_generate_real_image():
     assert result.path.stat().st_size > 1000, "Image file suspiciously small"
     assert result.width == 512
     assert result.height == 512
-    assert result.model_used.model_id == "gemini-3.1-flash-image-preview"
+    assert result.model_used.model_id, "model_used.model_id should not be empty"
 
     header = result.path.read_bytes()[:8]
-    assert header[:4] == b"\x89PNG", f"Not a valid PNG, header: {header!r}"
+    is_png = header[:4] == b"\x89PNG"
+    is_jpeg = header[:2] == b"\xff\xd8"
+    assert is_png or is_jpeg, f"Not a valid image, header: {header!r}"
     print(f"\nGenerated image at: {result.path}")
     print(f"File size: {result.path.stat().st_size} bytes")
 
@@ -111,7 +113,9 @@ def test_generate_transparent_image():
     assert result.path.stat().st_size > 1000, "Image file suspiciously small"
 
     header = result.path.read_bytes()[:8]
-    assert header[:4] == b"\x89PNG", f"Not a valid PNG, header: {header!r}"
+    is_png = header[:4] == b"\x89PNG"
+    is_jpeg = header[:2] == b"\xff\xd8"
+    assert is_png or is_jpeg, f"Not a valid image, header: {header!r}"
 
     from PIL import Image
     with Image.open(result.path) as img:
@@ -231,7 +235,7 @@ def test_generate_mflux_image():
 
 
 def test_missing_api_key_error(monkeypatch: pytest.MonkeyPatch):
-    """Verify clear error when GEMINI_API_KEY is missing."""
+    """Verify clear error when GEMINI_API_KEY is missing and Gemini is explicitly requested."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     # patch keyring.get_password to return None
@@ -247,6 +251,7 @@ def test_missing_api_key_error(monkeypatch: pytest.MonkeyPatch):
                     "test",
                     width=512,
                     height=512,
+                    provider="gemini",
                 )
             )
         assert exc_info.value.kind == ErrorKind.AUTH

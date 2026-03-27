@@ -140,78 +140,126 @@ async def execute_with_fallback(
 
     cfg = config or load_config()
     max_backoff = cfg.fallback.conversation.max_backoff_seconds
+    ss_max_retries = cfg.fallback.single_shot.max_retries
+    ss_retry_base = cfg.fallback.single_shot.retry_base_seconds
 
     attempts: list[dict[str, Any]] = []
 
     for index, provider_entry in enumerate(providers_chain):
-        attempt: dict[str, Any] = {"provider": provider_entry, "tier": tier}
 
         if logger is not None:
             logger.log_event("attempt_start", provider=provider_entry, tier=tier, attempt_index=index)
 
-        # conversation mode: exponential backoff before each retry after first
+        # conversation mode: exponential backoff before each cascade
         if is_conversation and index > 0:
             delay = min(2 ** (index - 1), max_backoff)
-            attempt["backoff_seconds"] = delay
             if logger is not None:
                 logger.log_event("backoff", attempt=index, delay_ms=int(delay * 1000))
             await asyncio.sleep(delay)
 
-        try:
-            result = await execute_fn(provider_entry)
-            if logger is not None:
-                logger.log_event("attempt_success", provider=provider_entry, tier=tier, attempt_index=index)
-            attempt["success"] = True
-            attempts.append(attempt)
-            return result
+        # determine retry count: single-shot retries per provider, conversation gets 1
+        retries = ss_max_retries if not is_conversation else 1
+        last_kind: ErrorKind = ErrorKind.INTERNAL
 
-        except Exception as err:
-            kind = classify_error(err)
-            attempt["error"] = str(err)
-            attempt["kind"] = kind.value
-            attempt["success"] = False
-            attempts.append(attempt)
+        for retry in range(retries):
+            attempt: dict[str, Any] = {
+                "provider": provider_entry,
+                "tier": tier,
+                "retry": retry,
+            }
 
-            if logger is not None:
-                logger.log_event(
-                    "attempt_failed",
-                    provider=provider_entry,
-                    tier=tier,
-                    attempt_index=index,
-                    error=str(err),
-                    kind=kind.value,
-                )
-
-            # AUTH and INVALID_REQUEST are caller bugs — raise immediately
-            if kind in (ErrorKind.AUTH, ErrorKind.INVALID_REQUEST):
+            # single-shot per-provider backoff on retry (not first attempt)
+            if not is_conversation and retry > 0:
+                delay = min(ss_retry_base * (2 ** (retry - 1)), 30.0)
+                attempt["backoff_seconds"] = delay
                 if logger is not None:
                     logger.log_event(
-                        "raise_immediate",
+                        "retry_backoff",
                         provider=provider_entry,
-                        kind=kind.value,
-                        error=str(err),
+                        retry=retry,
+                        delay_ms=int(delay * 1000),
                     )
-                raise AgentError(
-                    f"Non-retryable error from {provider_entry}: {err}",
-                    kind=kind,
-                    attempts=attempts,
-                ) from err
+                await asyncio.sleep(delay)
 
-            # all other kinds cascade to next provider
-            if logger is not None and index < len(providers_chain) - 1:
-                logger.log_event(
-                    "cascade",
-                    from_provider=provider_entry,
-                    to_provider=providers_chain[index + 1],
-                    reason=kind.value,
-                )
+            try:
+                result = await execute_fn(provider_entry)
+                if logger is not None:
+                    logger.log_event(
+                        "attempt_success",
+                        provider=provider_entry,
+                        tier=tier,
+                        attempt_index=index,
+                        retry=retry,
+                    )
+                attempt["success"] = True
+                attempts.append(attempt)
+                return result
 
-    # all providers exhausted
+            except Exception as err:
+                kind = classify_error(err)
+                attempt["error"] = str(err)
+                attempt["kind"] = kind.value
+                attempt["success"] = False
+                attempts.append(attempt)
+                last_kind = kind
+
+                if logger is not None:
+                    logger.log_event(
+                        "attempt_failed",
+                        provider=provider_entry,
+                        tier=tier,
+                        attempt_index=index,
+                        retry=retry,
+                        error=str(err),
+                        kind=kind.value,
+                    )
+
+                # AUTH and INVALID_REQUEST are caller bugs — raise immediately
+                if kind in (ErrorKind.AUTH, ErrorKind.INVALID_REQUEST):
+                    if logger is not None:
+                        logger.log_event(
+                            "raise_immediate",
+                            provider=provider_entry,
+                            kind=kind.value,
+                            error=str(err),
+                        )
+                    raise AgentError(
+                        f"Non-retryable error from {provider_entry}: {err}",
+                        kind=kind,
+                        attempts=attempts,
+                    ) from err
+
+                # TIMEOUT and NOT_AVAILABLE: no point retrying same provider
+                if kind in (ErrorKind.TIMEOUT, ErrorKind.NOT_AVAILABLE):
+                    break
+
+                # RATE_LIMIT and INTERNAL: worth retrying with backoff
+                # (loop continues to next retry)
+
+        # all retries for this provider exhausted — cascade to next
+        if logger is not None and index < len(providers_chain) - 1:
+            logger.log_event(
+                "cascade",
+                from_provider=provider_entry,
+                to_provider=providers_chain[index + 1],
+                reason=last_kind.value if last_kind else "unknown",
+            )
+
+    # all providers exhausted — build detailed error message
     if logger is not None:
         logger.log_event("all_failed", tier=tier, attempts=len(attempts))
 
+    lines = [f"All providers in chain failed for tier '{tier}' after {len(attempts)} attempt(s):"]
+    for a in attempts:
+        status = "ok" if a.get("success") else a.get("kind", "unknown")
+        retry_info = f" retry={a['retry']}" if a.get("retry", 0) > 0 else ""
+        err_msg = a.get("error", "")
+        # truncate long error messages to first line
+        first_line = err_msg.split("\n")[0][:200] if err_msg else ""
+        lines.append(f"  [{a['provider']}{retry_info}] {status}: {first_line}")
+
     raise AgentError(
-        f"All providers in chain failed for tier '{tier}' after {len(attempts)} attempt(s)",
+        "\n".join(lines),
         kind=ErrorKind.NOT_AVAILABLE,
         attempts=attempts,
     )

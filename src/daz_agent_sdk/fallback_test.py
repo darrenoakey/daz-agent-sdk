@@ -121,7 +121,9 @@ async def test_single_shot_first_fails_second_succeeds():
         is_conversation=False,
     )
     assert result == "result from p2"
-    assert calls == ["p1", "p2"]
+    # p1 is retried max_retries times (default 3) before cascading to p2
+    assert calls[:-1] == ["p1"] * (len(calls) - 1), f"all but last should be p1: {calls}"
+    assert calls[-1] == "p2"
 
 
 @pytest.mark.asyncio
@@ -159,9 +161,11 @@ async def test_single_shot_all_fail_agent_error_has_attempts():
         )
 
     err = exc_info.value
-    assert len(err.attempts) == 3
-    providers_tried = [a["provider"] for a in err.attempts]
-    assert providers_tried == ["p1", "p2", "p3"]
+    # p1 (rate_limit) retried 3x, p2/p3 (not_available) 1x each = 5 attempts
+    assert len(err.attempts) == 5
+    assert all(not a["success"] for a in err.attempts)
+    unique_providers = list(dict.fromkeys(a["provider"] for a in err.attempts))
+    assert unique_providers == ["p1", "p2", "p3"]
 
 
 @pytest.mark.asyncio
@@ -200,7 +204,9 @@ async def test_single_shot_internal_error_cascades():
 
     result = await execute_with_fallback("high", ["p1", "p2"], execute, is_conversation=False)
     assert result == "ok"
-    assert calls == ["p1", "p2"]
+    # p1 (internal) retried max_retries times before cascading to p2
+    assert calls[:-1] == ["p1"] * (len(calls) - 1)
+    assert calls[-1] == "p2"
 
 
 # ##################################################################
@@ -299,19 +305,21 @@ async def test_conversation_backoff_respects_max():
 
 @pytest.mark.asyncio
 async def test_conversation_no_backoff_for_single_shot():
+    """Single-shot has no cascade backoff between providers (unlike conversation mode).
+    Per-provider retries still have backoff, but cascade itself is immediate."""
     call_times: list[float] = []
 
     async def execute(provider: str):
         call_times.append(time.monotonic())
         if provider == "p1":
-            raise Exception("rate limit exceeded")
+            raise Exception("connection refused")  # NOT_AVAILABLE — no retry, cascades immediately
         return "ok"
 
     start = time.monotonic()
     await execute_with_fallback("high", ["p1", "p2"], execute, is_conversation=False)
     elapsed = time.monotonic() - start
 
-    # single-shot has NO backoff — should be well under 1 second
+    # NOT_AVAILABLE cascades immediately with no backoff
     assert elapsed < 0.5
 
 

@@ -258,7 +258,7 @@ async def test_complete_structured_with_system_message() -> None:
     resp = await provider.complete(messages, model, schema=Sentiment, timeout=180.0)
     assert isinstance(resp, StructuredResponse)
     assert isinstance(resp.parsed, Sentiment)
-    assert resp.parsed.label in {"positive", "negative", "neutral", "Positive", "Negative", "Neutral"}
+    assert resp.parsed.label.lower() in {"positive", "negative", "neutral"}
     assert 0.0 <= resp.parsed.confidence <= 1.0
 
 

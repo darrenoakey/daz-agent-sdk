@@ -99,11 +99,16 @@ def _extract_text(message: Any) -> str:
             return str(result)
         return ""
     if isinstance(message, _sdk.AssistantMessage):
-        parts: list[str] = []
+        text_parts: list[str] = []
         for block in message.content:
             if isinstance(block, _sdk.TextBlock):
-                parts.append(block.text)
-        return "".join(parts)
+                text_parts.append(block.text)
+            else:
+                _logger.debug(
+                    "claude: skipped non-text block type=%s in AssistantMessage",
+                    type(block).__name__,
+                )
+        return "".join(text_parts)
     return ""
 
 
@@ -159,7 +164,9 @@ class ClaudeProvider:
         if schema is not None and out_filename is not None:
             prompt += schema_instructions(schema, out_filename)
 
-        options = _build_options(_sdk, model, tools, effective_cwd, max_turns, self._permission_mode, mcp_servers)
+        # structured output needs at least 2 turns so the model can use file-write tools
+        effective_max_turns = max(max_turns, 2) if schema is not None else max_turns
+        options = _build_options(_sdk, model, tools, effective_cwd, effective_max_turns, self._permission_mode, mcp_servers)
 
         saved = _strip_claudecode()
         try:
@@ -192,6 +199,11 @@ class ClaudeProvider:
                     parsed=parsed_obj,
                 )
 
+            if not response_text:
+                raise AgentError(
+                    "claude returned empty response for non-structured request",
+                    kind=ErrorKind.INTERNAL,
+                )
             return Response(
                 text=response_text,
                 model_used=model,
@@ -272,9 +284,10 @@ def _build_options(
 ) -> Any:
     kwargs: dict[str, Any] = {
         "permission_mode": permission_mode,
-        "allowed_tools": tools or [],
         "max_turns": max_turns,
     }
+    if tools is not None:
+        kwargs["allowed_tools"] = tools
     if cwd is not None:
         kwargs["cwd"] = str(cwd)
     if model.model_id != "claude-opus-4-6":
@@ -330,7 +343,11 @@ async def _collect_response(prompt: str, options: Any) -> str:
     except Exception as err:
         err_str = str(err).lower()
         if "messageparse" in err_str or "unknown" in err_str:
-            _logger.warning("claude: swallowed parse error after %d msgs (%d skipped): %s", msg_count, skip_count, err)
+            # only swallow parse errors if we already collected text
+            if parts or result_text:
+                _logger.warning("claude: swallowed parse error after %d msgs (%d skipped): %s", msg_count, skip_count, err)
+            else:
+                raise
         else:
             raise
     finally:
