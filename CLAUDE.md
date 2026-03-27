@@ -58,7 +58,8 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Local BiRefNet fallback requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
 - BiRefNet model cached as module-level singleton (`_birefnet_model`), loaded with `.float()` for CPU compatibility
 - `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally
-- Claude provider `_collect_response` handles `ResultMessage.result` (definitive final answer in agentic mode) separately from `AssistantMessage` `TextBlock`s. When `cwd` is set, Claude uses tools and `AssistantMessage` may only contain `ToolUseBlock`s with no text.
+- Claude provider uses native `output_format` for structured output — SDK injects a `StructuredOutput` tool, data comes back in `ToolUseBlock(name='StructuredOutput', input={...})`. Falls back to parsing response text if native output unavailable
+- Claude provider `_collect_response` returns `(text, structured_output)` tuple — captures `ResultMessage.result`, `ResultMessage.structured_output`, and `StructuredOutput` tool calls
 - mflux Z-Image-Turbo uses `ZImageTurbo` from `mflux.models.z_image` (NOT `Flux1` — that's for FLUX.1 schnell/dev only). `generate_image()` returns `GeneratedImage` (not PIL), save with `.save(path=..., overwrite=True)`
 - Exclude `image_test.py` from normal test runs (`--ignore`) — mflux test downloads multi-GB model
 - Codex JSONL events: `item.completed` with `item.type=="agent_message"` carries response text; `turn.failed` and `error` events carry error messages; pipe prompt via stdin with `codex exec - --json -m MODEL -s read-only --ephemeral`
@@ -81,4 +82,9 @@ Full Go implementation in `go/` directory. See `go/README.md` for complete docum
 - TTS/STT use same CLI subprocesses as Python (tts, whisper)
 - Provider interface in root package, implementations in `provider/` subpackage
 - Capabilities in `capability/` subpackage wired to Agent via function fields (avoids circular imports)
-- 102 tests, all passing
+- Claude provider uses `anthropics/anthropic-sdk-go` — native structured output via `JSONOutputFormatParam`
+- OpenAI provider uses `openai/openai-go` — native structured output via `ResponseFormatJSONSchemaParam`
+- Gemini provider uses `google.golang.org/genai` — native structured output via `ResponseJsonSchema` + `ResponseMIMEType`
+- Ollama provider uses raw HTTP (no heavy SDK dep) — structured output via `format` field in chat request
+- Registration is done at call sites (main.go, tests), not via init()
+- 184 tests, all passing
