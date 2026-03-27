@@ -15,7 +15,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - `types.py` — Tier, Capability, ErrorKind, ModelInfo, Message, Response, AgentError
 - `config.py` — YAML config loader from `~/.daz-agent-sdk/config.yaml`, sensible defaults
 - `registry.py` — lazy provider loading, model resolution, tier chain mapping
-- `fallback.py` — error classification + single-shot cascade / conversation backoff+cascade
+- `fallback.py` — error classification + single-shot cascade (used by `Agent.ask`, not conversations)
 - `logging_.py` — per-conversation UUID JSONL event logger
 - `conversation.py` — multi-turn Conversation class with history, fork, stream
 - `core.py` — Agent singleton: ask, conversation, image, remove_background, speak, transcribe, models
@@ -43,6 +43,7 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 - Base `Provider.stream()` is NOT async — subclasses implement as async generators (which are AsyncIterator, not coroutines returning AsyncIterator)
 - `fallback.py` uses `EventLogger` Protocol for logger param — allows both ConversationLogger and test fakes
+- Conversation calls provider directly (no fallback chain) — conversations are tied to one provider's state; only `Agent.ask` uses `execute_with_fallback`
 - Codex and Gemini providers use CLI subprocesses — no API keys needed, auth handled by CLI tools
 - Test fakes for Provider must use async generators (with yield), not async functions returning iterators
 - Config defaults have no vllm — removed by design
