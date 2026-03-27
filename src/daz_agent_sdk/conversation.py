@@ -5,7 +5,6 @@ from typing import Any, AsyncIterator, Type
 from uuid import UUID, uuid4
 
 from daz_agent_sdk.config import Config, get_tier_chain, load_config
-from daz_agent_sdk.fallback import execute_with_fallback
 from daz_agent_sdk.logging_ import ConversationLogger
 from daz_agent_sdk.providers.base import Provider
 from daz_agent_sdk.registry import get_provider, resolve_model
@@ -93,34 +92,27 @@ class Conversation:
         *,
         schema: Type[T] | None = None,
         tier: Tier | None = None,
-        timeout: float = 300.0,
+        timeout: float = 3600.0,
+        max_turns: int = 10000,
     ) -> Response | StructuredResponse:
         effective_tier = tier if tier is not None else self._tier
         self._history.append(Message(role="user", content=content))
         messages = list(self._history)
 
-        provider_entry, model_info = self._resolve_provider_model(effective_tier)
-        providers_chain = self._build_providers_chain(effective_tier, provider_entry)
+        # conversations are tied to one provider — no fallback chain
+        provider_entry, _ = self._resolve_provider_model(effective_tier)
+        if not provider_entry:
+            # no explicit provider — use first from tier chain
+            chain = self._build_providers_chain(effective_tier, provider_entry)
+            provider_entry = chain[0] if chain else ""
+        pname, mid = _split_entry(provider_entry)
+        prov = _require_provider(pname)
+        minfo = _require_model(pname, mid, effective_tier)
+        kwargs: dict[str, Any] = {"schema": schema, "timeout": timeout, "max_turns": max_turns}
+        if self._mcp_servers is not None:
+            kwargs["mcp_servers"] = self._mcp_servers
 
-        mcp_servers = self._mcp_servers
-
-        async def execute_fn(chain_entry: str) -> Response | StructuredResponse:
-            pname, mid = _split_entry(chain_entry)
-            prov = _require_provider(pname)
-            minfo = _require_model(pname, mid, effective_tier)
-            kwargs: dict[str, Any] = {"schema": schema, "timeout": timeout}
-            if mcp_servers is not None:
-                kwargs["mcp_servers"] = mcp_servers
-            return await prov.complete(messages, minfo, **kwargs)
-
-        result = await execute_with_fallback(
-            effective_tier.value,
-            providers_chain,
-            execute_fn,
-            is_conversation=True,
-            config=self._config,
-            logger=self._logger,
-        )
+        result = await prov.complete(messages, minfo, **kwargs)
 
         self._history.append(Message(role="assistant", content=result.text))
         return result

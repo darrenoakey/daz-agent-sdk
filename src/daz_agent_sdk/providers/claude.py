@@ -199,11 +199,6 @@ class ClaudeProvider:
                     parsed=parsed_obj,
                 )
 
-            if not response_text:
-                raise AgentError(
-                    "claude returned empty response for non-structured request",
-                    kind=ErrorKind.INTERNAL,
-                )
             return Response(
                 text=response_text,
                 model_used=model,

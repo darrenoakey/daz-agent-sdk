@@ -254,9 +254,7 @@ async def execute_with_fallback(
         status = "ok" if a.get("success") else a.get("kind", "unknown")
         retry_info = f" retry={a['retry']}" if a.get("retry", 0) > 0 else ""
         err_msg = a.get("error", "")
-        # truncate long error messages to first line
-        first_line = err_msg.split("\n")[0][:200] if err_msg else ""
-        lines.append(f"  [{a['provider']}{retry_info}] {status}: {first_line}")
+        lines.append(f"  [{a['provider']}{retry_info}] {status}: {err_msg}")
 
     raise AgentError(
         "\n".join(lines),
