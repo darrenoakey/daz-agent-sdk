@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 import claude_agent_sdk as _sdk
 
-from daz_agent_sdk.structured import ensure_cwd, extract_result, schema_filename, schema_instructions
 from daz_agent_sdk.types import (
     AgentError,
     Capability,
@@ -139,7 +138,9 @@ class ClaudeProvider:
 
     # ##################################################################
     # complete
-    # send messages to claude and collect the full response
+    # send messages to claude and collect the full response.
+    # when schema is provided, uses claude_agent_sdk's native
+    # output_format for structured output instead of file-based extraction.
     async def complete(
         self,
         messages: list[Message],
@@ -152,25 +153,25 @@ class ClaudeProvider:
         timeout: float = 300.0,
         mcp_servers: dict[str, Any] | None = None,
     ) -> Response | StructuredResponse:
-        # For structured output, use file-based extraction
-        out_filename: str | None = None
-        effective_cwd = cwd
-        created_temp_cwd = False
-        if schema is not None:
-            out_filename = schema_filename()
-            effective_cwd, created_temp_cwd = ensure_cwd(cwd)
-
         prompt = _build_prompt(messages)
-        if schema is not None and out_filename is not None:
-            prompt += schema_instructions(schema, out_filename)
-
-        # structured output needs at least 2 turns so the model can use file-write tools
-        effective_max_turns = max(max_turns, 2) if schema is not None else max_turns
-        options = _build_options(_sdk, model, tools, effective_cwd, effective_max_turns, self._permission_mode, mcp_servers)
+        output_format: dict[str, Any] | None = None
+        effective_max_turns = max_turns
+        if schema is not None:
+            output_format = {
+                "type": "json_schema",
+                "schema": schema.model_json_schema(),
+            }
+            # structured output uses a StructuredOutput tool call —
+            # needs at least 2 turns for the tool call round-trip
+            effective_max_turns = max(max_turns, 2)
+        options = _build_options(
+            _sdk, model, tools, cwd, effective_max_turns, self._permission_mode,
+            mcp_servers, output_format,
+        )
 
         saved = _strip_claudecode()
         try:
-            response_text = await asyncio.wait_for(
+            response_text, structured_output = await asyncio.wait_for(
                 _collect_response(prompt, options),
                 timeout=timeout,
             )
@@ -185,30 +186,45 @@ class ClaudeProvider:
         finally:
             _restore_claudecode(saved)
 
-        try:
-            if schema is not None and out_filename is not None and effective_cwd is not None:
+        if schema is not None:
+            # prefer native structured_output, fall back to parsing response text
+            parsed_data = structured_output
+            if parsed_data is None and response_text:
+                import json
+                from daz_agent_sdk.types import parse_json_from_llm
                 try:
-                    parsed_obj = extract_result(schema, out_filename, str(effective_cwd), response_text)
-                except Exception as e:
-                    raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
-                return StructuredResponse(
-                    text=response_text,
-                    model_used=model,
-                    conversation_id=_placeholder_uuid(),
-                    turn_id=_placeholder_uuid(),
-                    parsed=parsed_obj,
+                    parsed_data = parse_json_from_llm(response_text)
+                except json.JSONDecodeError as e:
+                    raise AgentError(
+                        f"Structured output parse failed: {e}",
+                        kind=ErrorKind.INTERNAL,
+                    ) from e
+            if parsed_data is None:
+                raise AgentError(
+                    "claude returned no structured output and no response text",
+                    kind=ErrorKind.INTERNAL,
                 )
-
-            return Response(
+            try:
+                parsed_obj = schema.model_validate(parsed_data)
+            except Exception as e:
+                raise AgentError(
+                    f"Structured output validation failed: {e}",
+                    kind=ErrorKind.INTERNAL,
+                ) from e
+            return StructuredResponse(
                 text=response_text,
                 model_used=model,
                 conversation_id=_placeholder_uuid(),
                 turn_id=_placeholder_uuid(),
+                parsed=parsed_obj,
             )
-        finally:
-            if created_temp_cwd and effective_cwd:
-                import shutil
-                shutil.rmtree(effective_cwd, ignore_errors=True)
+
+        return Response(
+            text=response_text,
+            model_used=model,
+            conversation_id=_placeholder_uuid(),
+            turn_id=_placeholder_uuid(),
+        )
 
     # ##################################################################
     # stream
@@ -276,6 +292,7 @@ def _build_options(
     max_turns: int,
     permission_mode: str,
     mcp_servers: dict[str, Any] | None = None,
+    output_format: dict[str, Any] | None = None,
 ) -> Any:
     kwargs: dict[str, Any] = {
         "permission_mode": permission_mode,
@@ -289,16 +306,20 @@ def _build_options(
         kwargs["model"] = model.model_id
     if mcp_servers:
         kwargs["mcp_servers"] = mcp_servers
+    if output_format is not None:
+        kwargs["output_format"] = output_format
     return sdk.ClaudeAgentOptions(**kwargs)
 
 
 # ##################################################################
 # collect response
 # iterate through the sdk query and collect all text blocks.
+# returns (response_text, structured_output) where structured_output
+# is the parsed data from ResultMessage.structured_output (or None).
 # monkey-patches parse_message to skip unknown message types
 # (e.g. rate_limit_event) instead of raising MessageParseError
 # which kills the async generator and loses all collected text.
-async def _collect_response(prompt: str, options: Any) -> str:
+async def _collect_response(prompt: str, options: Any) -> tuple[str, Any]:
     import importlib
     _client = importlib.import_module("claude_agent_sdk._internal.client")
 
@@ -316,6 +337,7 @@ async def _collect_response(prompt: str, options: Any) -> str:
     setattr(_client, "parse_message", _safe_parse)
     parts: list[str] = []
     result_text: str | None = None
+    structured_output: Any = None
     msg_count = 0
     skip_count = 0
     msg_types: list[str] = []
@@ -331,7 +353,15 @@ async def _collect_response(prompt: str, options: Any) -> str:
                 r = getattr(message, "result", None)
                 if r:
                     result_text = str(r)
+                so = getattr(message, "structured_output", None)
+                if so is not None:
+                    structured_output = so
                 continue
+            # capture structured output from StructuredOutput tool calls
+            if isinstance(message, _sdk.AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, _sdk.ToolUseBlock) and block.name == "StructuredOutput":
+                        structured_output = block.input
             text = _extract_text(message)
             if text:
                 parts.append(text)
@@ -349,14 +379,14 @@ async def _collect_response(prompt: str, options: Any) -> str:
         setattr(_client, "parse_message", _orig_parse)
     # prefer ResultMessage.result (final answer) over intermediate text
     if result_text is not None:
-        return result_text.strip()
+        return result_text.strip(), structured_output
     response = "".join(parts).strip()
     if not response:
         _logger.warning(
             "claude: empty response — %d messages received, %d skipped, types: %s, parts: %d",
             msg_count, skip_count, msg_types, len(parts),
         )
-    return response
+    return response, structured_output
 
 
 # ##################################################################

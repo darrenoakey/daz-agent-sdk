@@ -86,7 +86,7 @@ def test_build_prompt_with_history() -> None:
 
 
 def test_build_prompt_ignores_schema() -> None:
-    """Schema is now handled separately via schema_instructions, not in _build_prompt."""
+    """Schema is handled via native output_format, not in _build_prompt."""
     messages = [Message(role="user", content="test")]
     result = _build_prompt(messages)
     assert result == "test"
@@ -169,7 +169,7 @@ async def test_complete_structured() -> None:
 @pytest.mark.skipif(not _HAS_SDK, reason="claude_agent_sdk not installed")
 @pytest.mark.asyncio
 async def test_complete_structured_complex() -> None:
-    """Structured output with multiple fields via file-based extraction."""
+    """Structured output with multiple fields via native output_format."""
     from pydantic import BaseModel
 
     class Analysis(BaseModel):

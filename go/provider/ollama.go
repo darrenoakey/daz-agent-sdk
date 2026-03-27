@@ -205,6 +205,7 @@ type chatRequest struct {
 	Model    string              `json:"model"`
 	Messages []map[string]string `json:"messages"`
 	Stream   bool                `json:"stream"`
+	Format   any                 `json:"format,omitempty"`
 }
 
 // chatResponse is the JSON response from /api/chat (non-streaming).
@@ -227,6 +228,7 @@ func (o *OllamaProvider) Complete(ctx context.Context, messages []sdk.Message, m
 		Model:    model.ModelID,
 		Messages: buildMessages(messages),
 		Stream:   false,
+		Format:   opts.Schema,
 	}
 
 	body, err := json.Marshal(payload)
