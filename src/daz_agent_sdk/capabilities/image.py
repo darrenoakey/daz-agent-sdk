@@ -340,6 +340,7 @@ async def _generate_spark(
     transparent: bool = False,
     timeout: float = 300.0,
     base_url: str | None = None,
+    model: str = "z-image-turbo",
 ) -> None:
     import base64
     import json
@@ -356,7 +357,7 @@ async def _generate_spark(
             body = b""
             fields = {
                 "prompt": prompt,
-                "model": "z-image-turbo",
+                "model": model,
                 "width": str(width),
                 "height": str(height),
                 "steps": str(steps),
@@ -383,7 +384,7 @@ async def _generate_spark(
             # text-to-image via JSON
             payload = json.dumps({
                 "prompt": prompt,
-                "model": "z-image-turbo",
+                "model": model,
                 "width": width,
                 "height": height,
                 "steps": steps,
@@ -456,11 +457,13 @@ async def _generate_one(
     timeout: float,
     cfg: Config,
     conv_id: UUID,
+    model: str | None = None,
 ) -> ImageResult:
     # spark — CUDA-accelerated remote GPU
     if provider_name == "spark":
         steps = get_image_steps(tier, cfg)
         spark_url = cfg.providers.get("spark", {}).get("base_url")
+        effective_model = model or cfg.image.model or "z-image-turbo"
         await _generate_spark(
             prompt,
             width=width,
@@ -471,13 +474,24 @@ async def _generate_one(
             transparent=transparent,
             timeout=timeout,
             base_url=spark_url,
+            model=effective_model,
         )
         if transparent:
             arbiter_url = cfg.providers.get("arbiter", {}).get("base_url")
             await _remove_background_spark(output_path, timeout=timeout, base_url=arbiter_url)
+        spark_model_info = ModelInfo(
+            provider="spark",
+            model_id=effective_model,
+            display_name=f"Spark {effective_model}",
+            capabilities=frozenset({Capability.IMAGE}),
+            tier=Tier.HIGH,
+            supports_streaming=False,
+            supports_structured=False,
+            supports_conversation=False,
+        )
         return ImageResult(
             path=output_path,
-            model_used=_SPARK_MODEL,
+            model_used=spark_model_info,
             conversation_id=conv_id,
             prompt=prompt,
             width=width,
@@ -647,6 +661,7 @@ async def generate_image(
     transparent: bool = False,
     timeout: float = 120.0,
     provider: str | None = None,
+    model: str | None = None,
     config: Config | None = None,
     logger: ConversationLogger | None = None,
     conversation_id: UUID | None = None,
@@ -715,6 +730,7 @@ async def generate_image(
                 timeout=timeout,
                 cfg=cfg,
                 conv_id=conv_id,
+                model=model,
             )
             if logger is not None:
                 logger.log_event("image_complete", path=str(output_path), provider=provider_name)

@@ -57,7 +57,9 @@ type LoggingConfig struct {
 
 // FallbackSingleShotConfig holds strategy for one-shot requests.
 type FallbackSingleShotConfig struct {
-	Strategy string `yaml:"strategy" json:"strategy"`
+	Strategy         string  `yaml:"strategy" json:"strategy"`
+	MaxRetries       int     `yaml:"max_retries" json:"max_retries"`
+	RetryBaseSeconds float64 `yaml:"retry_base_seconds" json:"retry_base_seconds"`
 }
 
 // FallbackConversationConfig holds strategy for multi-turn conversations.
@@ -201,6 +203,12 @@ func (c *Config) applyDefaults() {
 	// Fallback defaults
 	if c.Fallback.SingleShot.Strategy == "" {
 		c.Fallback.SingleShot.Strategy = "immediate_cascade"
+	}
+	if c.Fallback.SingleShot.MaxRetries == 0 {
+		c.Fallback.SingleShot.MaxRetries = 3
+	}
+	if c.Fallback.SingleShot.RetryBaseSeconds == 0 {
+		c.Fallback.SingleShot.RetryBaseSeconds = 1.0
 	}
 	if c.Fallback.Conversation.Strategy == "" {
 		c.Fallback.Conversation.Strategy = "backoff_then_cascade"

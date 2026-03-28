@@ -171,6 +171,7 @@ class Agent:
         transparent: bool = False,
         timeout: float = 300.0,
         provider: str | None = None,
+        model: str | None = None,
     ) -> ImageResult:
         return await generate_image(
             prompt,
@@ -182,6 +183,7 @@ class Agent:
             transparent=transparent,
             timeout=timeout,
             provider=provider,
+            model=model,
             config=self._config,
             conversation_id=uuid.uuid4(),
         )

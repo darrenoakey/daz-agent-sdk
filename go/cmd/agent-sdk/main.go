@@ -27,7 +27,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Register the ollama provider factory
+	// Register all provider factories
 	sdk.RegisterProviderFactory("ollama", func(cfg *sdk.Config) sdk.Provider {
 		baseURL := "http://localhost:11434"
 		if cfg != nil {
@@ -38,6 +38,15 @@ func main() {
 			}
 		}
 		return provider.NewOllamaProvider(baseURL)
+	})
+	sdk.RegisterProviderFactory("claude", func(cfg *sdk.Config) sdk.Provider {
+		return provider.NewClaudeProvider()
+	})
+	sdk.RegisterProviderFactory("openai", func(cfg *sdk.Config) sdk.Provider {
+		return provider.NewOpenAIProvider()
+	})
+	sdk.RegisterProviderFactory("gemini", func(cfg *sdk.Config) sdk.Provider {
+		return provider.NewGeminiProvider()
 	})
 
 	command := os.Args[1]

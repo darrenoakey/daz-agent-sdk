@@ -194,6 +194,75 @@ func TestConversation_SayOllama(t *testing.T) {
 	}
 }
 
+func TestSayOption_WithSaySchema(t *testing.T) {
+	schema := map[string]any{"type": "object"}
+	o := &sayOpts{}
+	WithSaySchema(schema)(o)
+	if o.schema == nil {
+		t.Fatal("WithSaySchema should set schema")
+	}
+	s, ok := o.schema.(map[string]any)
+	if !ok {
+		t.Fatalf("schema type = %T, want map[string]any", o.schema)
+	}
+	if s["type"] != "object" {
+		t.Errorf("schema[type] = %v, want object", s["type"])
+	}
+}
+
+func TestSayOption_WithSayTier(t *testing.T) {
+	o := &sayOpts{}
+	WithSayTier(TierLow)(o)
+	if o.tier == nil {
+		t.Fatal("WithSayTier should set tier")
+	}
+	if *o.tier != TierLow {
+		t.Errorf("tier = %q, want %q", *o.tier, TierLow)
+	}
+}
+
+func TestSayOption_TierOverrideIsPerCall(t *testing.T) {
+	// Conversation has TierHigh; a Say call with WithSayTier(TierLow) should
+	// use TierLow for that call only, leaving the conversation tier unchanged.
+	conv := NewConversation("tier-override-test", WithTier(TierHigh))
+	defer conv.Close()
+
+	if conv.tier != TierHigh {
+		t.Fatalf("initial tier = %q, want %q", conv.tier, TierHigh)
+	}
+
+	// Build the chain as Say would, using the per-call tier override
+	chain := conv.buildChain(TierLow, "", "")
+	if len(chain) == 0 {
+		t.Fatal("buildChain returned empty chain for TierLow")
+	}
+	// Verify conversation tier unchanged after buildChain
+	if conv.tier != TierHigh {
+		t.Errorf("conversation tier mutated to %q, want %q", conv.tier, TierHigh)
+	}
+	// Verify the chain matches the low tier chain
+	cfg := conv.config
+	expected := GetTierChain(TierLow, cfg)
+	if len(chain) != len(expected) {
+		t.Errorf("chain len = %d, want %d", len(chain), len(expected))
+	}
+}
+
+func TestSayOption_NilTierUsesConversationDefault(t *testing.T) {
+	conv := NewConversation("default-tier-test", WithTier(TierMedium))
+	defer conv.Close()
+
+	o := &sayOpts{}
+	// No tier override — tier should remain from conversation
+	effectiveTier := conv.tier
+	if o.tier != nil {
+		effectiveTier = *o.tier
+	}
+	if effectiveTier != TierMedium {
+		t.Errorf("effective tier = %q, want %q", effectiveTier, TierMedium)
+	}
+}
+
 func TestConversation_BuildChain_Override(t *testing.T) {
 	conv := NewConversation("chain-test",
 		WithProvider("ollama"),

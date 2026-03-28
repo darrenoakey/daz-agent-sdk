@@ -289,6 +289,46 @@ func TestGetImageStepsUnknownTier(t *testing.T) {
 	}
 }
 
+func TestDefaultFallbackSingleShotRetryFields(t *testing.T) {
+	cfg, err := LoadConfig("/nonexistent/path/config.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Fallback.SingleShot.MaxRetries != 3 {
+		t.Errorf("Fallback.SingleShot.MaxRetries = %d, want 3", cfg.Fallback.SingleShot.MaxRetries)
+	}
+	if cfg.Fallback.SingleShot.RetryBaseSeconds != 1.0 {
+		t.Errorf("Fallback.SingleShot.RetryBaseSeconds = %f, want 1.0", cfg.Fallback.SingleShot.RetryBaseSeconds)
+	}
+}
+
+func TestFallbackSingleShotRetryFieldsFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	configFile := dir + "/config.yaml"
+
+	yamlContent := `
+fallback:
+  single_shot:
+    strategy: immediate_cascade
+    max_retries: 5
+    retry_base_seconds: 2.5
+`
+	if err := os.WriteFile(configFile, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Fallback.SingleShot.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d, want 5", cfg.Fallback.SingleShot.MaxRetries)
+	}
+	if cfg.Fallback.SingleShot.RetryBaseSeconds != 2.5 {
+		t.Errorf("RetryBaseSeconds = %f, want 2.5", cfg.Fallback.SingleShot.RetryBaseSeconds)
+	}
+}
+
 func TestGetTierChainReturnsCopy(t *testing.T) {
 	cfg, err := LoadConfig("/nonexistent/path/config.yaml")
 	if err != nil {

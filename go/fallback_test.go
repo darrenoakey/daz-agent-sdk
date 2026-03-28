@@ -154,9 +154,11 @@ func TestExecuteWithFallbackCascade(t *testing.T) {
 	fn := func(entry string) (*Response, error) {
 		callOrder = append(callOrder, entry)
 		if entry == "provider_a:model1" {
+			// connection refused → not_available → no per-provider retry, cascade immediately
 			return nil, errors.New("connection refused")
 		}
 		if entry == "provider_b:model2" {
+			// rate limit → retried up to MaxRetries (3) times before cascading
 			return nil, errors.New("rate limit exceeded")
 		}
 		return &Response{
@@ -173,8 +175,12 @@ func TestExecuteWithFallbackCascade(t *testing.T) {
 	if resp.Text != "success from provider_c:model3" {
 		t.Errorf("Text = %q, want 'success from provider_c:model3'", resp.Text)
 	}
-	if len(callOrder) != 3 {
-		t.Errorf("expected 3 calls, got %d: %v", len(callOrder), callOrder)
+	// provider_a: 1 call (not_available → break)
+	// provider_b: cfg.Fallback.SingleShot.MaxRetries calls (rate_limit → retry)
+	// provider_c: 1 call (success)
+	wantCalls := 1 + cfg.Fallback.SingleShot.MaxRetries + 1
+	if len(callOrder) != wantCalls {
+		t.Errorf("expected %d calls, got %d: %v", wantCalls, len(callOrder), callOrder)
 	}
 }
 
@@ -284,6 +290,100 @@ func TestExecuteWithFallbackEmptyChain(t *testing.T) {
 	}
 	if agentErr.Kind != ErrorNotAvailable {
 		t.Errorf("Kind = %q, want not_available", agentErr.Kind)
+	}
+}
+
+func TestExecuteWithFallbackSingleShotRetriesRateLimit(t *testing.T) {
+	// Rate limit errors should be retried up to MaxRetries times per provider
+	// before cascading. Use MaxRetries=2 to keep the test fast.
+	cfg, _ := LoadConfig("/nonexistent/path/config.yaml")
+	cfg.Fallback.SingleShot.MaxRetries = 2
+	cfg.Fallback.SingleShot.RetryBaseSeconds = 0.001 // near-zero delay for fast tests
+
+	callCount := 0
+	chain := []string{"provider_a:model1", "provider_b:model2"}
+
+	fn := func(entry string) (*Response, error) {
+		callCount++
+		if entry == "provider_a:model1" {
+			return nil, errors.New("rate limit exceeded")
+		}
+		return &Response{
+			Text:           "ok from " + entry,
+			ConversationID: uuid.New(),
+			TurnID:         uuid.New(),
+		}, nil
+	}
+
+	resp, err := ExecuteWithFallback(context.Background(), "test", chain, fn, cfg, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "ok from provider_b:model2" {
+		t.Errorf("Text = %q, want 'ok from provider_b:model2'", resp.Text)
+	}
+	// provider_a retried MaxRetries=2 times, then provider_b succeeds on first try
+	wantCalls := cfg.Fallback.SingleShot.MaxRetries + 1
+	if callCount != wantCalls {
+		t.Errorf("callCount = %d, want %d (maxRetries=%d + 1 success)", callCount, wantCalls, cfg.Fallback.SingleShot.MaxRetries)
+	}
+}
+
+func TestExecuteWithFallbackSingleShotNoRetryOnNotAvailable(t *testing.T) {
+	// NOT_AVAILABLE errors should not be retried — cascade immediately
+	cfg, _ := LoadConfig("/nonexistent/path/config.yaml")
+	cfg.Fallback.SingleShot.MaxRetries = 3
+	cfg.Fallback.SingleShot.RetryBaseSeconds = 10.0 // would cause timeout if retried
+
+	callCount := 0
+	chain := []string{"provider_a:model1", "provider_b:model2"}
+
+	fn := func(entry string) (*Response, error) {
+		callCount++
+		if entry == "provider_a:model1" {
+			return nil, errors.New("connection refused")
+		}
+		return &Response{
+			Text:           "ok",
+			ConversationID: uuid.New(),
+			TurnID:         uuid.New(),
+		}, nil
+	}
+
+	resp, err := ExecuteWithFallback(context.Background(), "test", chain, fn, cfg, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Text != "ok" {
+		t.Errorf("Text = %q, want 'ok'", resp.Text)
+	}
+	// provider_a: 1 call (not_available → break), provider_b: 1 call (success)
+	if callCount != 2 {
+		t.Errorf("callCount = %d, want 2 (not_available should not be retried)", callCount)
+	}
+}
+
+func TestExecuteWithFallbackUsesConfigMaxRetries(t *testing.T) {
+	// Verify that MaxRetries=1 means exactly 1 attempt per provider
+	cfg, _ := LoadConfig("/nonexistent/path/config.yaml")
+	cfg.Fallback.SingleShot.MaxRetries = 1
+	cfg.Fallback.SingleShot.RetryBaseSeconds = 0.001
+
+	callCount := 0
+	chain := []string{"provider_a:model1", "provider_b:model2"}
+
+	fn := func(entry string) (*Response, error) {
+		callCount++
+		return nil, errors.New("rate limit exceeded")
+	}
+
+	_, err := ExecuteWithFallback(context.Background(), "test", chain, fn, cfg, false)
+	if err == nil {
+		t.Fatal("expected error when all providers fail")
+	}
+	// MaxRetries=1 means exactly 1 attempt per provider
+	if callCount != 2 {
+		t.Errorf("callCount = %d, want 2 (MaxRetries=1, 2 providers)", callCount)
 	}
 }
 

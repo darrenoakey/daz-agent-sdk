@@ -105,21 +105,52 @@ func NewConversation(name string, opts ...ConversationOption) *Conversation {
 	return c
 }
 
+// SayOption configures a single Say call via the functional options pattern.
+type SayOption func(*sayOpts)
+
+type sayOpts struct {
+	schema any
+	tier   *Tier
+}
+
+// WithSaySchema sets the JSON schema for structured output on this Say call.
+func WithSaySchema(schema any) SayOption {
+	return func(o *sayOpts) { o.schema = schema }
+}
+
+// WithSayTier overrides the model tier for this specific Say call.
+func WithSayTier(tier Tier) SayOption {
+	return func(o *sayOpts) { o.tier = &tier }
+}
+
 // Say adds a user message to the history, sends all messages to the provider
 // via the fallback engine, appends the assistant response to history, and
-// returns the Response.
-func (c *Conversation) Say(ctx context.Context, prompt string) (*Response, error) {
+// returns the Response. Optional SayOption values allow per-call schema and
+// tier overrides.
+func (c *Conversation) Say(ctx context.Context, prompt string, opts ...SayOption) (*Response, error) {
+	o := &sayOpts{}
+	for _, fn := range opts {
+		fn(o)
+	}
+
 	c.mu.Lock()
 	c.history = append(c.history, Message{Role: "user", Content: prompt})
 	messages := make([]Message, len(c.history))
 	copy(messages, c.history)
 	tier := c.tier
+	if o.tier != nil {
+		tier = *o.tier
+	}
 	providerName := c.providerName
 	modelID := c.modelID
 	cfg := c.config
 	c.mu.Unlock()
 
 	chain := c.buildChain(tier, providerName, modelID)
+
+	completeOpts := CompleteOpts{
+		Schema: o.schema,
+	}
 
 	executeFn := func(providerEntry string) (*Response, error) {
 		pname, mid := splitEntry(providerEntry)
@@ -131,7 +162,7 @@ func (c *Conversation) Say(ctx context.Context, prompt string) (*Response, error
 		if minfo == nil {
 			return nil, fmt.Errorf("model '%s:%s' could not be resolved", pname, mid)
 		}
-		return prov.Complete(ctx, messages, *minfo, CompleteOpts{})
+		return prov.Complete(ctx, messages, *minfo, completeOpts)
 	}
 
 	result, err := ExecuteWithFallback(ctx, string(tier), chain, executeFn, cfg, true)

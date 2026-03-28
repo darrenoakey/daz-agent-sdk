@@ -23,6 +23,10 @@ type Agent struct {
 	// TranscribeFn is the function called by Transcribe(). Set by capability
 	// package registration or by the caller directly.
 	TranscribeFn func(ctx context.Context, audioPath string, opts TranscribeCallOpts) (string, error)
+
+	// RemoveBackgroundFn is the function called by RemoveBackground().
+	// Set by capability package registration or by the caller directly.
+	RemoveBackgroundFn func(ctx context.Context, imagePath string, opts RemoveBackgroundCallOpts) (string, error)
 }
 
 // ImageCallOpts holds parameters for the image generation function.
@@ -30,11 +34,20 @@ type ImageCallOpts struct {
 	Width          int
 	Height         int
 	Output         string
+	Provider       string
+	Model          string
+	Image          string // input image path for i2i
 	Tier           Tier
 	Transparent    bool
 	Timeout        time.Duration
 	Config         *Config
 	Logger         *ConversationLogger
+}
+
+// RemoveBackgroundCallOpts holds parameters for background removal.
+type RemoveBackgroundCallOpts struct {
+	Timeout time.Duration
+	Config  *Config
 }
 
 // SpeakCallOpts holds parameters for the speech synthesis function.
@@ -87,6 +100,9 @@ type askOpts struct {
 	provider string
 	model    string
 	timeout  float64
+	tools    []string
+	cwd      string
+	maxTurns int
 }
 
 // WithAskTier sets the model tier for the ask call.
@@ -119,6 +135,21 @@ func WithAskTimeout(timeout float64) AskOption {
 	return func(o *askOpts) { o.timeout = timeout }
 }
 
+// WithAskTools sets the list of tool names for agentic providers.
+func WithAskTools(tools []string) AskOption {
+	return func(o *askOpts) { o.tools = tools }
+}
+
+// WithAskCwd sets the working directory for agentic providers.
+func WithAskCwd(cwd string) AskOption {
+	return func(o *askOpts) { o.cwd = cwd }
+}
+
+// WithAskMaxTurns sets the maximum number of agentic turns.
+func WithAskMaxTurns(n int) AskOption {
+	return func(o *askOpts) { o.maxTurns = n }
+}
+
 // Ask sends a single-turn prompt and returns a Response. If provider and
 // model are both specified via options, uses that pair directly. Otherwise
 // resolves the tier chain and uses fallback.
@@ -138,8 +169,11 @@ func (a *Agent) Ask(ctx context.Context, prompt string, opts ...AskOption) (*Res
 	messages = append(messages, Message{Role: "user", Content: prompt})
 
 	completeOpts := CompleteOpts{
-		Schema:  o.schema,
-		Timeout: o.timeout,
+		Schema:   o.schema,
+		Timeout:  o.timeout,
+		Tools:    o.tools,
+		Cwd:      o.cwd,
+		MaxTurns: o.maxTurns,
 	}
 
 	// Direct provider+model override
@@ -205,6 +239,9 @@ type ImageOpts struct {
 	Width       int
 	Height      int
 	Output      string
+	Provider    string // "spark", "ollama", "nano-banana-2"
+	Model       string // "z-image-turbo", "flux-schnell", etc.
+	Image       string // input image path for image-to-image
 	Tier        Tier
 	Transparent bool
 	Timeout     time.Duration
@@ -224,10 +261,33 @@ func (a *Agent) Image(ctx context.Context, prompt string, opts ImageOpts) (*Imag
 		Width:       opts.Width,
 		Height:      opts.Height,
 		Output:      opts.Output,
+		Provider:    opts.Provider,
+		Model:       opts.Model,
+		Image:       opts.Image,
 		Tier:        opts.Tier,
 		Transparent: opts.Transparent,
 		Timeout:     opts.Timeout,
 		Config:      a.config,
+	})
+}
+
+// RemoveBackgroundOpts holds optional parameters for Agent.RemoveBackground.
+type RemoveBackgroundOpts struct {
+	Timeout time.Duration
+}
+
+// RemoveBackground removes the background from an image using the arbiter
+// GPU service. Overwrites the image in-place with a PNG with alpha channel.
+func (a *Agent) RemoveBackground(ctx context.Context, imagePath string, opts RemoveBackgroundOpts) (string, error) {
+	if a.RemoveBackgroundFn == nil {
+		return "", NewAgentError(
+			"remove_background capability not registered; import capability package or set Agent.RemoveBackgroundFn",
+			ErrorNotAvailable, nil,
+		)
+	}
+	return a.RemoveBackgroundFn(ctx, imagePath, RemoveBackgroundCallOpts{
+		Timeout: opts.Timeout,
+		Config:  a.config,
 	})
 }
 
