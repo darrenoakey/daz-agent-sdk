@@ -9,9 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"os"
 	"path/filepath"
 	"time"
@@ -109,22 +107,6 @@ type ollamaGenerateResponse struct {
 	Done  bool   `json:"done"`
 }
 
-// sparkGenerateRequest is the JSON body for POST /v1/images/generate.
-type sparkGenerateRequest struct {
-	Prompt      string `json:"prompt"`
-	Model       string `json:"model"`
-	Width       int    `json:"width,omitempty"`
-	Height      int    `json:"height,omitempty"`
-	Steps       int    `json:"steps,omitempty"`
-	Transparent bool   `json:"transparent,omitempty"`
-}
-
-// sparkGenerateResponse is the JSON body returned by the spark image API.
-type sparkGenerateResponse struct {
-	Image string `json:"image"`
-	Model string `json:"model,omitempty"`
-}
-
 // arbiterJobRequest is the JSON body for POST /v1/jobs.
 type arbiterJobRequest struct {
 	Type   string         `json:"type"`
@@ -155,22 +137,9 @@ func ollamaBaseURL(cfg *agentsdk.Config) string {
 	return "http://localhost:11434"
 }
 
-// sparkBaseURL returns the Spark image server URL from config, env, or default.
-func sparkBaseURL(cfg *agentsdk.Config) string {
-	if cfg != nil {
-		if p, ok := cfg.Providers["spark"]; ok {
-			if u, ok := p["base_url"].(string); ok && u != "" {
-				return u
-			}
-		}
-	}
-	if u := os.Getenv("SPARK_IMAGE_URL"); u != "" {
-		return u
-	}
-	return "http://spark:8100"
-}
-
 // arbiterBaseURL returns the arbiter job server URL from config, env, or default.
+// All spark image generation goes through the arbiter — there is no direct
+// spark:8100 endpoint anymore.
 func arbiterBaseURL(cfg *agentsdk.Config) string {
 	if cfg != nil {
 		if p, ok := cfg.Providers["arbiter"]; ok {
@@ -388,25 +357,33 @@ func generateOllama(ctx context.Context, prompt string, opts ImageOpts, cfg *age
 	}, nil
 }
 
-// generateSpark performs image generation using the Spark HTTP server.
-// For text-to-image, it POSTs JSON to /v1/images/generate.
-// For image-to-image, it POSTs multipart form data to /v1/images/edit.
+// generateSpark submits an image generation job to the arbiter and polls
+// for completion. All spark image generation goes through arbiter (spark:8400).
 func generateSpark(ctx context.Context, prompt string, opts ImageOpts, cfg *agentsdk.Config, timeout time.Duration, steps int) (*agentsdk.ImageResult, error) {
-	baseURL := sparkBaseURL(cfg)
 	model := sparkModelName(opts, cfg)
+	arbURL := arbiterBaseURL(cfg)
 
-	var (
-		imageData []byte
-		reqErr    error
-	)
-
-	if opts.Image != "" {
-		imageData, reqErr = generateSparkI2I(ctx, prompt, opts, baseURL, timeout, steps, model)
-	} else {
-		imageData, reqErr = generateSparkT2I(ctx, prompt, opts, baseURL, timeout, steps, model)
+	// Build job params
+	params := map[string]any{
+		"prompt": prompt,
+		"width":  opts.Width,
+		"height": opts.Height,
+		"steps":  steps,
 	}
-	if reqErr != nil {
-		return nil, reqErr
+
+	jobType := "image-generate"
+	if opts.Image != "" {
+		jobType = "image-edit"
+		inputData, err := os.ReadFile(opts.Image)
+		if err != nil {
+			return nil, fmt.Errorf("reading input image %s: %w", opts.Image, err)
+		}
+		params["image"] = base64.StdEncoding.EncodeToString(inputData)
+	}
+
+	imageData, err := submitArbiterImageJob(ctx, arbURL, jobType, model, params, timeout)
+	if err != nil {
+		return nil, err
 	}
 
 	outputPath, err := resolveOutputPath(opts.Output)
@@ -436,136 +413,127 @@ func generateSpark(ctx context.Context, prompt string, opts ImageOpts, cfg *agen
 	}, nil
 }
 
-// generateSparkT2I sends a JSON POST to /v1/images/generate and returns raw image bytes.
-func generateSparkT2I(ctx context.Context, prompt string, opts ImageOpts, baseURL string, timeout time.Duration, steps int, model string) ([]byte, error) {
-	reqBody := sparkGenerateRequest{
-		Prompt:      prompt,
-		Model:       model,
-		Width:       opts.Width,
-		Height:      opts.Height,
-		Steps:       steps,
-		Transparent: opts.Transparent,
+// arbiterJobRequestWithModel extends arbiterJobRequest with a top-level model field.
+type arbiterJobRequestWithModel struct {
+	Type   string         `json:"type"`
+	Model  string         `json:"model,omitempty"`
+	Params map[string]any `json:"params"`
+}
+
+// submitArbiterImageJob submits a job to the arbiter, polls for completion,
+// and returns the base64-decoded image data from the result.
+func submitArbiterImageJob(ctx context.Context, arbURL, jobType, model string, params map[string]any, timeout time.Duration) ([]byte, error) {
+	jobReq := arbiterJobRequestWithModel{
+		Type:   jobType,
+		Model:  model,
+		Params: params,
 	}
-	bodyBytes, err := json.Marshal(reqBody)
+	jobBytes, err := json.Marshal(jobReq)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling spark request: %w", err)
+		return nil, fmt.Errorf("marshaling arbiter job request: %w", err)
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	url := baseURL + "/v1/images/generate"
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	submitReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, arbURL+"/v1/jobs", bytes.NewReader(jobBytes))
 	if err != nil {
-		return nil, fmt.Errorf("creating spark HTTP request: %w", err)
+		return nil, fmt.Errorf("creating arbiter submit request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	submitReq.Header.Set("Content-Type", "application/json")
 
-	return doSparkRequest(reqCtx, httpReq, timeout)
-}
-
-// generateSparkI2I sends a multipart form POST to /v1/images/edit and returns raw image bytes.
-func generateSparkI2I(ctx context.Context, prompt string, opts ImageOpts, baseURL string, timeout time.Duration, steps int, model string) ([]byte, error) {
-	inputData, err := os.ReadFile(opts.Image)
+	submitResp, err := http.DefaultClient.Do(submitReq)
 	if err != nil {
-		return nil, fmt.Errorf("reading input image %s: %w", opts.Image, err)
-	}
-
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-
-	// Text fields
-	for _, kv := range [][2]string{
-		{"prompt", prompt},
-		{"model", model},
-		{"width", fmt.Sprint(opts.Width)},
-		{"height", fmt.Sprint(opts.Height)},
-		{"steps", fmt.Sprint(steps)},
-		{"transparent", fmt.Sprint(opts.Transparent)},
-	} {
-		if err := mw.WriteField(kv[0], kv[1]); err != nil {
-			return nil, fmt.Errorf("writing multipart field %s: %w", kv[0], err)
-		}
-	}
-
-	// Image file part
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filepath.Base(opts.Image)))
-	h.Set("Content-Type", "image/png")
-	part, err := mw.CreatePart(h)
-	if err != nil {
-		return nil, fmt.Errorf("creating multipart image part: %w", err)
-	}
-	if _, err := part.Write(inputData); err != nil {
-		return nil, fmt.Errorf("writing image data to multipart: %w", err)
-	}
-	if err := mw.Close(); err != nil {
-		return nil, fmt.Errorf("closing multipart writer: %w", err)
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	url := baseURL + "/v1/images/edit"
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, &buf)
-	if err != nil {
-		return nil, fmt.Errorf("creating spark i2i HTTP request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
-
-	return doSparkRequest(reqCtx, httpReq, timeout)
-}
-
-// doSparkRequest executes an HTTP request to the spark image server and
-// decodes the base64 image from the response.
-func doSparkRequest(ctx context.Context, httpReq *http.Request, timeout time.Duration) ([]byte, error) {
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, agentsdk.NewAgentError(
-				fmt.Sprintf("spark request timed out after %s", timeout),
-				agentsdk.ErrorTimeout, nil,
-			)
-		}
 		return nil, agentsdk.NewAgentError(
-			fmt.Sprintf("spark request failed: %v", err),
+			fmt.Sprintf("arbiter unreachable at %s: %v", arbURL, err),
 			agentsdk.ErrorNotAvailable, nil,
 		)
 	}
-	defer resp.Body.Close()
+	defer submitResp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	submitBody, err := io.ReadAll(submitResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading spark response body: %w", err)
+		return nil, fmt.Errorf("reading arbiter submit response: %w", err)
 	}
-
-	if resp.StatusCode != http.StatusOK {
+	if submitResp.StatusCode != http.StatusOK && submitResp.StatusCode != http.StatusCreated {
 		return nil, agentsdk.NewAgentError(
-			fmt.Sprintf("spark returned HTTP %d: %s", resp.StatusCode, string(respBytes)),
+			fmt.Sprintf("arbiter submit returned HTTP %d: %s", submitResp.StatusCode, string(submitBody)),
 			agentsdk.ErrorInternal, nil,
 		)
 	}
 
-	var genResp sparkGenerateResponse
-	if err := json.Unmarshal(respBytes, &genResp); err != nil {
-		return nil, fmt.Errorf("unmarshaling spark response: %w", err)
+	var jobResp arbiterJobResponse
+	if err := json.Unmarshal(submitBody, &jobResp); err != nil {
+		return nil, fmt.Errorf("unmarshaling arbiter job response: %w", err)
+	}
+	if jobResp.JobID == "" {
+		return nil, agentsdk.NewAgentError("arbiter returned no job_id", agentsdk.ErrorInternal, nil)
 	}
 
-	if genResp.Image == "" {
-		return nil, agentsdk.NewAgentError(
-			"spark returned no image data",
-			agentsdk.ErrorInternal, nil,
-		)
-	}
+	// Poll for completion
+	pollInterval := 500 * time.Millisecond
+	for {
+		select {
+		case <-reqCtx.Done():
+			return nil, agentsdk.NewAgentError(
+				fmt.Sprintf("arbiter %s job timed out", jobType),
+				agentsdk.ErrorTimeout, nil,
+			)
+		case <-time.After(pollInterval):
+		}
 
-	imageData, err := base64.StdEncoding.DecodeString(genResp.Image)
-	if err != nil {
-		return nil, fmt.Errorf("decoding spark base64 image: %w", err)
+		pollReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
+			fmt.Sprintf("%s/v1/jobs/%s", arbURL, jobResp.JobID), nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating arbiter poll request: %w", err)
+		}
+
+		pollResp, err := http.DefaultClient.Do(pollReq)
+		if err != nil {
+			continue // transient; keep polling
+		}
+		pollBody, err := io.ReadAll(pollResp.Body)
+		pollResp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		var status arbiterJobStatus
+		if err := json.Unmarshal(pollBody, &status); err != nil {
+			continue
+		}
+
+		switch status.Status {
+		case "completed":
+			var resultB64 string
+			if v, ok := status.Result["image"].(string); ok {
+				resultB64 = v
+			} else if v, ok := status.Result["data"].(string); ok {
+				resultB64 = v
+			}
+			if resultB64 == "" {
+				return nil, agentsdk.NewAgentError(
+					fmt.Sprintf("arbiter %s job completed but no image in result", jobType),
+					agentsdk.ErrorInternal, nil,
+				)
+			}
+			imageData, err := base64.StdEncoding.DecodeString(resultB64)
+			if err != nil {
+				return nil, fmt.Errorf("decoding arbiter result image: %w", err)
+			}
+			return imageData, nil
+
+		case "failed":
+			return nil, agentsdk.NewAgentError(
+				fmt.Sprintf("arbiter %s job failed: %s", jobType, status.Error),
+				agentsdk.ErrorInternal, nil,
+			)
+		}
+		// still running — keep polling
 	}
-	return imageData, nil
 }
 
-// removeBackgroundSpark submits a background-remove job to the arbiter and
+// removeBackgroundSpark// removeBackgroundSpark submits a background-remove job to the arbiter and
 // waits for completion, returning the path to the result image file.
 func removeBackgroundSpark(ctx context.Context, imagePath string, cfg *agentsdk.Config, timeout time.Duration) (string, error) {
 	rawImage, err := os.ReadFile(imagePath)

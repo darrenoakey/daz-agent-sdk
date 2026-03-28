@@ -325,8 +325,9 @@ async def _remove_background_spark(
 
 
 # ##################################################################
-# spark image server — CUDA-accelerated FLUX.1-schnell on remote GPU
-_SPARK_DEFAULT_URL = "http://spark:8100"
+# spark image generation via arbiter job API
+# all spark image generation goes through arbiter at spark:8400.
+# there is no direct spark:8100 endpoint anymore.
 
 
 async def _generate_spark(
@@ -344,74 +345,82 @@ async def _generate_spark(
 ) -> None:
     import base64
     import json
+    import time as _time
     from urllib.request import Request, urlopen
     from urllib.error import URLError
 
-    url = base_url or os.environ.get("SPARK_IMAGE_URL") or _SPARK_DEFAULT_URL
+    url = base_url or os.environ.get("ARBITER_URL") or _ARBITER_DEFAULT_URL
 
     def _call() -> None:
+        # build job params
+        params: dict[str, Any] = {
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+            "steps": steps,
+        }
+        job_type = "image-generate"
         if input_image is not None:
-            # img2img via multipart form
-            import mimetypes
-            boundary = "----AgentSDKBoundary"
-            body = b""
-            fields = {
-                "prompt": prompt,
-                "model": model,
-                "width": str(width),
-                "height": str(height),
-                "steps": str(steps),
-                "transparent": str(transparent).lower(),
-            }
-            for k, v in fields.items():
-                body += f"--{boundary}\r\n".encode()
-                body += f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode()
-                body += f"{v}\r\n".encode()
-            # image file
-            mime = mimetypes.guess_type(str(input_image))[0] or "image/png"
-            body += f"--{boundary}\r\n".encode()
-            body += f'Content-Disposition: form-data; name="image"; filename="{input_image.name}"\r\n'.encode()
-            body += f"Content-Type: {mime}\r\n\r\n".encode()
-            body += input_image.read_bytes()
-            body += f"\r\n--{boundary}--\r\n".encode()
-            req = Request(
-                f"{url}/v1/images/edit",
-                data=body,
-                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-                method="POST",
-            )
-        else:
-            # text-to-image via JSON
-            payload = json.dumps({
-                "prompt": prompt,
-                "model": model,
-                "width": width,
-                "height": height,
-                "steps": steps,
-                "transparent": transparent,
-            }).encode()
-            req = Request(
-                f"{url}/v1/images/generate",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
+            job_type = "image-edit"
+            params["image"] = base64.b64encode(input_image.read_bytes()).decode()
+
+        # submit job to arbiter with model selection
+        payload = json.dumps({
+            "type": job_type,
+            "model": model,
+            "params": params,
+        }).encode()
+        req = Request(
+            f"{url}/v1/jobs",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
 
         try:
-            with urlopen(req, timeout=timeout) as resp:
+            with urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read())
         except URLError as e:
             raise AgentError(
-                f"Spark image server unreachable at {url}: {e}",
+                f"Arbiter unreachable at {url}: {e}",
                 kind=ErrorKind.NOT_AVAILABLE,
             ) from e
 
-        if "image" not in data:
+        job_id = data.get("job_id")
+        if not job_id:
             raise AgentError(
-                f"Spark returned no image data: {data}",
+                f"Arbiter returned no job_id: {data}",
                 kind=ErrorKind.INTERNAL,
             )
-        output_path.write_bytes(base64.b64decode(data["image"]))
+
+        # poll until done
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            poll_req = Request(f"{url}/v1/jobs/{job_id}", method="GET")
+            with urlopen(poll_req, timeout=10) as resp:
+                status_data = json.loads(resp.read())
+            status = status_data.get("status")
+            if status == "completed":
+                result = status_data.get("result", {})
+                image_b64 = result.get("image") or result.get("data")
+                if not image_b64:
+                    raise AgentError(
+                        f"Arbiter {job_type} returned no image: {status_data}",
+                        kind=ErrorKind.INTERNAL,
+                    )
+                output_path.write_bytes(base64.b64decode(image_b64))
+                return
+            if status == "failed":
+                raise AgentError(
+                    f"Arbiter {job_type} failed: {status_data.get('error')}",
+                    kind=ErrorKind.INTERNAL,
+                )
+            _time.sleep(0.5)
+
+        raise AgentError(
+            f"Arbiter {job_type} timed out after {timeout}s",
+            kind=ErrorKind.TIMEOUT,
+        )
 
     loop = asyncio.get_event_loop()
     try:
@@ -463,7 +472,7 @@ async def _generate_one(
     # spark — CUDA-accelerated remote GPU
     if provider_name == "spark":
         steps = steps_override if steps_override and steps_override > 0 else get_image_steps(tier, cfg)
-        spark_url = cfg.providers.get("spark", {}).get("base_url")
+        spark_url = cfg.providers.get("arbiter", {}).get("base_url")
         effective_model = model or cfg.image.model or "z-image-turbo"
         await _generate_spark(
             prompt,

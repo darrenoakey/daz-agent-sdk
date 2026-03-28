@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +57,7 @@ func sparkCfg(serverURL string) *agentsdk.Config {
 		"high": {Steps: 3},
 	}
 	cfg.Providers = map[string]map[string]any{
-		"spark": {"base_url": serverURL},
+		"arbiter": {"base_url": serverURL},
 	}
 	return cfg
 }
@@ -161,46 +159,6 @@ func TestImageSize_Exact1024(t *testing.T) {
 	}
 }
 
-// ── Unit: sparkBaseURL ─────────────────────────────────────────────────────
-
-func TestSparkBaseURL_Default(t *testing.T) {
-	t.Setenv("SPARK_IMAGE_URL", "")
-	if got := sparkBaseURL(nil); got != "http://spark:8100" {
-		t.Errorf("expected default, got %s", got)
-	}
-}
-
-func TestSparkBaseURL_FromEnv(t *testing.T) {
-	t.Setenv("SPARK_IMAGE_URL", "http://myhost:9000")
-	if got := sparkBaseURL(nil); got != "http://myhost:9000" {
-		t.Errorf("expected env value, got %s", got)
-	}
-}
-
-func TestSparkBaseURL_FromConfig(t *testing.T) {
-	t.Setenv("SPARK_IMAGE_URL", "")
-	cfg := &agentsdk.Config{
-		Providers: map[string]map[string]any{
-			"spark": {"base_url": "http://cfg-spark:1234"},
-		},
-	}
-	if got := sparkBaseURL(cfg); got != "http://cfg-spark:1234" {
-		t.Errorf("expected config value, got %s", got)
-	}
-}
-
-func TestSparkBaseURL_ConfigOverridesEnv(t *testing.T) {
-	t.Setenv("SPARK_IMAGE_URL", "http://env-spark:9999")
-	cfg := &agentsdk.Config{
-		Providers: map[string]map[string]any{
-			"spark": {"base_url": "http://cfg-spark:1234"},
-		},
-	}
-	if got := sparkBaseURL(cfg); got != "http://cfg-spark:1234" {
-		t.Errorf("expected config to override env, got %s", got)
-	}
-}
-
 // ── Unit: arbiterBaseURL ───────────────────────────────────────────────────
 
 func TestArbiterBaseURL_Default(t *testing.T) {
@@ -285,9 +243,9 @@ func TestBuildFallbackChain_AlternatePrimary(t *testing.T) {
 	}
 }
 
-// ── Unit: multipart form building ─────────────────────────────────────────
+// ── Unit: image-to-image via arbiter job API ───────────────────────────────
 
-func TestSparkI2I_MultipartForm(t *testing.T) {
+func TestSparkI2I_ArbiterJobRequest(t *testing.T) {
 	pngData := createTestPNG()
 	// Write input image to temp file
 	inputFile, err := os.CreateTemp("", "input_*.png")
@@ -300,48 +258,40 @@ func TestSparkI2I_MultipartForm(t *testing.T) {
 	}
 	inputFile.Close()
 
-	var capturedContentType string
-	var capturedFields = map[string]string{}
-	var capturedImageData []byte
+	var capturedJobType string
+	var capturedPrompt string
+	var capturedImageB64 string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/images/edit" {
-			t.Errorf("expected /v1/images/edit, got %s", r.URL.Path)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
+			body, _ := io.ReadAll(r.Body)
+			var req arbiterJobRequestWithModel
+			if err := json.Unmarshal(body, &req); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			capturedJobType = req.Type
+			if p, ok := req.Params["prompt"].(string); ok {
+				capturedPrompt = p
+			}
+			if img, ok := req.Params["image"].(string); ok {
+				capturedImageB64 = img
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"job_id": "edit-job-1"})
+
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/edit-job-1"):
+			b64Image := base64.StdEncoding.EncodeToString(createTestPNG())
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]string{"image": b64Image},
+			})
+
+		default:
 			http.Error(w, "not found", http.StatusNotFound)
-			return
 		}
-
-		capturedContentType = r.Header.Get("Content-Type")
-		mediaType, params, err := mime.ParseMediaType(capturedContentType)
-		if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
-			t.Errorf("expected multipart content-type, got %s", capturedContentType)
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		mr := multipart.NewReader(r.Body, params["boundary"])
-		for {
-			part, err := mr.NextPart()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				t.Errorf("reading multipart: %v", err)
-				break
-			}
-			data, _ := io.ReadAll(part)
-			name := part.FormName()
-			if name == "image" {
-				capturedImageData = data
-			} else {
-				capturedFields[name] = string(data)
-			}
-		}
-
-		b64Image := base64.StdEncoding.EncodeToString(createTestPNG())
-		resp := sparkGenerateResponse{Image: b64Image}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -362,20 +312,20 @@ func TestSparkI2I_MultipartForm(t *testing.T) {
 		t.Fatalf("GenerateImage failed: %v", err)
 	}
 
-	// Verify multipart boundary is present
-	if !strings.Contains(capturedContentType, "boundary=") {
-		t.Errorf("content-type missing boundary: %s", capturedContentType)
+	// Verify job type is image-edit
+	if capturedJobType != "image-edit" {
+		t.Errorf("expected job type image-edit, got %q", capturedJobType)
 	}
 
-	// Verify key fields
-	if capturedFields["prompt"] != "edit this image" {
-		t.Errorf("expected prompt field, got %q", capturedFields["prompt"])
+	// Verify prompt
+	if capturedPrompt != "edit this image" {
+		t.Errorf("expected prompt 'edit this image', got %q", capturedPrompt)
 	}
-	if capturedFields["model"] != sparkImageModel {
-		t.Errorf("expected model=%s, got %q", sparkImageModel, capturedFields["model"])
-	}
-	if len(capturedImageData) != len(pngData) {
-		t.Errorf("expected %d image bytes, got %d", len(pngData), len(capturedImageData))
+
+	// Verify input image was base64-encoded and sent
+	expectedB64 := base64.StdEncoding.EncodeToString(pngData)
+	if capturedImageB64 != expectedB64 {
+		t.Errorf("image param mismatch: got %d chars, want %d chars", len(capturedImageB64), len(expectedB64))
 	}
 }
 
@@ -385,34 +335,39 @@ func TestGenerateImage_SparkT2I(t *testing.T) {
 	pngData := createTestPNG()
 	b64Image := base64.StdEncoding.EncodeToString(pngData)
 
+	var capturedJobType string
+	var capturedPrompt string
+	var capturedModel string
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/images/generate" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
+			body, _ := io.ReadAll(r.Body)
+			var req arbiterJobRequestWithModel
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Errorf("failed to decode arbiter job request: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			capturedJobType = req.Type
+			capturedModel = req.Model
+			if p, ok := req.Params["prompt"].(string); ok {
+				capturedPrompt = p
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"job_id": "t2i-job-1"})
+
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/t2i-job-1"):
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]string{"image": b64Image},
+			})
+
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "not found", http.StatusNotFound)
-			return
 		}
-		if r.Method != http.MethodPost {
-			t.Errorf("unexpected method: %s", r.Method)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		var req sparkGenerateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("failed to decode request: %v", err)
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		if req.Prompt != "a red circle" {
-			t.Errorf("unexpected prompt: %s", req.Prompt)
-		}
-		if req.Model != sparkImageModel {
-			t.Errorf("unexpected model: %s", req.Model)
-		}
-
-		resp := sparkGenerateResponse{Image: b64Image}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -433,6 +388,15 @@ func TestGenerateImage_SparkT2I(t *testing.T) {
 		t.Fatalf("GenerateImage failed: %v", err)
 	}
 
+	if capturedJobType != "image-generate" {
+		t.Errorf("expected job type image-generate, got %q", capturedJobType)
+	}
+	if capturedPrompt != "a red circle" {
+		t.Errorf("unexpected prompt: %q", capturedPrompt)
+	}
+	if capturedModel != sparkImageModel {
+		t.Errorf("unexpected model: %q", capturedModel)
+	}
 	if result.Path != outputPath {
 		t.Errorf("expected path %s, got %s", outputPath, result.Path)
 	}
@@ -453,10 +417,22 @@ func TestGenerateImage_SparkT2I(t *testing.T) {
 }
 
 func TestGenerateImage_SparkNoImageData(t *testing.T) {
+	// Arbiter returns a completed job with no image in result
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := sparkGenerateResponse{Image: ""}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"job_id": "no-img-job"})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/no-img-job"):
+			w.Header().Set("Content-Type", "application/json")
+			// completed but result has no image field
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]any{},
+			})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -512,7 +488,7 @@ func TestGenerateImage_SparkNotRunning(t *testing.T) {
 
 	cfg := &agentsdk.Config{
 		Providers: map[string]map[string]any{
-			"spark": {"base_url": "http://" + addr},
+			"arbiter": {"base_url": "http://" + addr},
 		},
 		Image: agentsdk.ImageConfig{
 			Tiers: map[string]agentsdk.ImageTierConfig{"high": {Steps: 3}},
@@ -642,9 +618,19 @@ func TestGenerateImage_TempFile(t *testing.T) {
 	b64Image := base64.StdEncoding.EncodeToString(pngData)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := sparkGenerateResponse{Image: b64Image}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"job_id": "tmp-job-1"})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tmp-job-1"):
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]string{"image": b64Image},
+			})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -698,11 +684,11 @@ func TestGenerateImage_FallbackChain_UsesSecondOnFirstFailure(t *testing.T) {
 	pngData := createTestPNG()
 	b64Image := base64.StdEncoding.EncodeToString(pngData)
 
-	// Spark server: always 500
-	sparkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Arbiter (spark) server: always 500
+	arbiterServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "spark down", http.StatusInternalServerError)
 	}))
-	defer sparkServer.Close()
+	defer arbiterServer.Close()
 
 	// Ollama fallback server: returns valid image
 	ollamaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -719,8 +705,8 @@ func TestGenerateImage_FallbackChain_UsesSecondOnFirstFailure(t *testing.T) {
 			Fallback: []string{"ollama"},
 		},
 		Providers: map[string]map[string]any{
-			"spark":  {"base_url": sparkServer.URL},
-			"ollama": {"base_url": ollamaServer.URL},
+			"arbiter": {"base_url": arbiterServer.URL},
+			"ollama":  {"base_url": ollamaServer.URL},
 		},
 	}
 
@@ -738,10 +724,10 @@ func TestGenerateImage_FallbackChain_UsesSecondOnFirstFailure(t *testing.T) {
 }
 
 func TestGenerateImage_FallbackChain_AllFail(t *testing.T) {
-	sparkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	arbiterServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "spark down", http.StatusInternalServerError)
 	}))
-	defer sparkServer.Close()
+	defer arbiterServer.Close()
 
 	ollamaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ollama down", http.StatusInternalServerError)
@@ -755,8 +741,8 @@ func TestGenerateImage_FallbackChain_AllFail(t *testing.T) {
 			Fallback: []string{"ollama"},
 		},
 		Providers: map[string]map[string]any{
-			"spark":  {"base_url": sparkServer.URL},
-			"ollama": {"base_url": ollamaServer.URL},
+			"arbiter": {"base_url": arbiterServer.URL},
+			"ollama":  {"base_url": ollamaServer.URL},
 		},
 	}
 
@@ -802,13 +788,19 @@ func TestGenerateImage_DefaultProviderIsSpark(t *testing.T) {
 	b64Image := base64.StdEncoding.EncodeToString(pngData)
 
 	sparkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/images/generate" {
-			resp := sparkGenerateResponse{Image: b64Image}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
-			return
+			json.NewEncoder(w).Encode(map[string]string{"job_id": "default-job-1"})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/default-job-1"):
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]string{"image": b64Image},
+			})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
 		}
-		http.Error(w, "not found", http.StatusNotFound)
 	}))
 	defer sparkServer.Close()
 
@@ -1146,23 +1138,41 @@ func TestSparkModelInfoFor_FluxSchnell(t *testing.T) {
 	}
 }
 
-func TestSparkT2I_SendsModelInRequest(t *testing.T) {
+// fakeArbiterServer creates a test server that simulates the arbiter job API.
+// It captures the submitted model and returns a completed job with a test PNG.
+func fakeArbiterServer(t *testing.T) (*httptest.Server, *string) {
+	t.Helper()
 	var receivedModel string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var req sparkGenerateRequest
-		json.Unmarshal(body, &req)
-		receivedModel = req.Model
-		json.NewEncoder(w).Encode(sparkGenerateResponse{
-			Image: base64.StdEncoding.EncodeToString(createTestPNG()),
-			Model: req.Model,
-		})
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/v1/jobs") {
+			body, _ := io.ReadAll(r.Body)
+			var req arbiterJobRequestWithModel
+			json.Unmarshal(body, &req)
+			receivedModel = req.Model
+			json.NewEncoder(w).Encode(map[string]string{"job_id": "test-job-123"})
+			return
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/v1/jobs/") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": map[string]string{
+					"image": base64.StdEncoding.EncodeToString(createTestPNG()),
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
 	}))
+	return ts, &receivedModel
+}
+
+func TestSparkArbiter_SendsModelInRequest(t *testing.T) {
+	ts, receivedModel := fakeArbiterServer(t)
 	defer ts.Close()
 
 	cfg := &agentsdk.Config{
 		Providers: map[string]map[string]any{
-			"spark": {"base_url": ts.URL},
+			"arbiter": {"base_url": ts.URL},
 		},
 	}
 
@@ -1178,30 +1188,21 @@ func TestSparkT2I_SendsModelInRequest(t *testing.T) {
 		t.Fatalf("GenerateImage error: %v", err)
 	}
 
-	if receivedModel != "flux-schnell" {
-		t.Errorf("spark server received model=%q, want flux-schnell", receivedModel)
+	if *receivedModel != "flux-schnell" {
+		t.Errorf("arbiter received model=%q, want flux-schnell", *receivedModel)
 	}
 	if result.ModelUsed.ModelID != "flux-schnell" {
 		t.Errorf("result.ModelUsed.ModelID=%q, want flux-schnell", result.ModelUsed.ModelID)
 	}
 }
 
-func TestSparkT2I_DefaultModel(t *testing.T) {
-	var receivedModel string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var req sparkGenerateRequest
-		json.Unmarshal(body, &req)
-		receivedModel = req.Model
-		json.NewEncoder(w).Encode(sparkGenerateResponse{
-			Image: base64.StdEncoding.EncodeToString(createTestPNG()),
-		})
-	}))
+func TestSparkArbiter_DefaultModel(t *testing.T) {
+	ts, receivedModel := fakeArbiterServer(t)
 	defer ts.Close()
 
 	cfg := &agentsdk.Config{
 		Providers: map[string]map[string]any{
-			"spark": {"base_url": ts.URL},
+			"arbiter": {"base_url": ts.URL},
 		},
 	}
 
@@ -1215,8 +1216,8 @@ func TestSparkT2I_DefaultModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateImage error: %v", err)
 	}
-	if receivedModel != "z-image-turbo" {
-		t.Errorf("default model should be z-image-turbo, got %q", receivedModel)
+	if *receivedModel != "z-image-turbo" {
+		t.Errorf("default model should be z-image-turbo, got %q", *receivedModel)
 	}
 }
 
