@@ -458,10 +458,11 @@ async def _generate_one(
     cfg: Config,
     conv_id: UUID,
     model: str | None = None,
+    steps_override: int | None = None,
 ) -> ImageResult:
     # spark — CUDA-accelerated remote GPU
     if provider_name == "spark":
-        steps = get_image_steps(tier, cfg)
+        steps = steps_override if steps_override and steps_override > 0 else get_image_steps(tier, cfg)
         spark_url = cfg.providers.get("spark", {}).get("base_url")
         effective_model = model or cfg.image.model or "z-image-turbo"
         await _generate_spark(
@@ -500,7 +501,7 @@ async def _generate_one(
 
     # mflux — local Apple Silicon
     if provider_name == "mflux":
-        steps = get_image_steps(tier, cfg)
+        steps = steps_override if steps_override and steps_override > 0 else get_image_steps(tier, cfg)
         await _generate_mflux(
             prompt,
             width=width,
@@ -662,6 +663,7 @@ async def generate_image(
     timeout: float = 120.0,
     provider: str | None = None,
     model: str | None = None,
+    steps: int | None = None,
     config: Config | None = None,
     logger: ConversationLogger | None = None,
     conversation_id: UUID | None = None,
@@ -731,6 +733,7 @@ async def generate_image(
                 cfg=cfg,
                 conv_id=conv_id,
                 model=model,
+                steps_override=steps,
             )
             if logger is not None:
                 logger.log_event("image_complete", path=str(output_path), provider=provider_name)

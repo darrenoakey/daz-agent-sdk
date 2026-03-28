@@ -77,7 +77,10 @@ type ImageOpts struct {
 	// Output is the file path to write the generated image to.
 	// When empty, a temp file is created.
 	Output string
-	// Tier selects the quality tier (used to look up step count).
+	// Steps overrides the inference step count for spark. Zero means
+	// derive from Tier via config (typically 4 for high, 2 for low).
+	Steps int
+	// Tier selects the quality tier (used to look up step count when Steps is 0).
 	Tier agentsdk.Tier
 	// Transparent requests background removal via spark arbiter.
 	Transparent bool
@@ -829,7 +832,10 @@ func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsd
 		convID = uuid.New()
 	}
 
-	steps := agentsdk.GetImageSteps(tier, cfg)
+	steps := opts.Steps
+	if steps <= 0 {
+		steps = agentsdk.GetImageSteps(tier, cfg)
+	}
 
 	primary := opts.Provider
 	if primary == "" {
