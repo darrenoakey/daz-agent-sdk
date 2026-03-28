@@ -1,15 +1,20 @@
+// Package provider contains concrete AI provider implementations.
+//
+// ClaudeProvider wraps the Claude Code CLI (ambient subscription login).
+// No API key required — uses the same auth as `claude` on the command line.
 package provider
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
 
 	sdk "github.com/darrenoakey/daz-agent-sdk/go"
@@ -52,13 +57,16 @@ var claudeModels = []sdk.ModelInfo{
 	},
 }
 
-// ClaudeProvider calls the Anthropic API using the official Go SDK.
-// Authentication is via ANTHROPIC_API_KEY environment variable.
-type ClaudeProvider struct{}
+// ClaudeProvider wraps the Claude Code CLI for text generation, streaming,
+// and structured output. Uses the ambient Claude subscription login —
+// no API key required.
+type ClaudeProvider struct {
+	permissionMode string
+}
 
-// NewClaudeProvider returns a new ClaudeProvider.
+// NewClaudeProvider returns a new ClaudeProvider with bypassPermissions mode.
 func NewClaudeProvider() *ClaudeProvider {
-	return &ClaudeProvider{}
+	return &ClaudeProvider{permissionMode: "bypassPermissions"}
 }
 
 // Name returns "claude".
@@ -66,106 +74,116 @@ func (c *ClaudeProvider) Name() string {
 	return "claude"
 }
 
-// Available returns true when ANTHROPIC_API_KEY is set and the API responds.
-// Returns false (not an error) when the key is absent.
-func (c *ClaudeProvider) Available(ctx context.Context) (bool, error) {
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		return false, nil
+// findClaudeCLI locates the claude binary on PATH or in common locations.
+func findClaudeCLI() (string, error) {
+	if p, err := exec.LookPath("claude"); err == nil {
+		return p, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		home + "/.npm-global/bin/claude",
+		"/usr/local/bin/claude",
+		home + "/.local/bin/claude",
+		home + "/node_modules/.bin/claude",
+		home + "/.claude/local/claude",
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("claude CLI not found — install with: npm install -g @anthropic-ai/claude-code")
+}
 
-	client := anthropic.NewClient(option.WithMaxRetries(0))
-	_, err := client.Models.List(ctx, anthropic.ModelListParams{})
-	if err != nil {
-		return false, nil
-	}
-	return true, nil
+// Available returns true when the claude CLI is installed and reachable.
+func (c *ClaudeProvider) Available(_ context.Context) (bool, error) {
+	_, err := findClaudeCLI()
+	return err == nil, nil
 }
 
 // ListModels returns the static Claude model catalog.
-// No network call is made; the list is hard-coded to match the requirements.
 func (c *ClaudeProvider) ListModels(_ context.Context) ([]sdk.ModelInfo, error) {
 	result := make([]sdk.ModelInfo, len(claudeModels))
 	copy(result, claudeModels)
 	return result, nil
 }
 
-// buildAnthropicMessages converts sdk.Message slice into Anthropic API params.
-// System messages are collected separately; multiple system messages are merged
-// with newlines. Non-system messages become MessageParam entries.
-func buildAnthropicMessages(messages []sdk.Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam) {
+// buildPrompt combines message history into a single prompt string for the CLI.
+func buildPrompt(messages []sdk.Message) (string, string) {
 	var systemParts []string
-	var params []anthropic.MessageParam
-
+	var userParts []string
 	for _, m := range messages {
-		if m.Role == "system" {
+		switch m.Role {
+		case "system":
 			systemParts = append(systemParts, m.Content)
-			continue
-		}
-		block := anthropic.NewTextBlock(m.Content)
-		var role anthropic.MessageParamRole
-		if m.Role == "assistant" {
-			role = anthropic.MessageParamRoleAssistant
-		} else {
-			role = anthropic.MessageParamRoleUser
-		}
-		params = append(params, anthropic.MessageParam{
-			Role:    role,
-			Content: []anthropic.ContentBlockParamUnion{block},
-		})
-	}
-
-	var systemBlocks []anthropic.TextBlockParam
-	if len(systemParts) > 0 {
-		systemBlocks = []anthropic.TextBlockParam{
-			{Text: strings.Join(systemParts, "\n")},
+		case "user":
+			userParts = append(userParts, m.Content)
+		case "assistant":
+			userParts = append(userParts, "[Previous assistant response]\n"+m.Content)
 		}
 	}
-	return systemBlocks, params
+	return strings.Join(systemParts, "\n"), strings.Join(userParts, "\n\n")
 }
 
-// classifyAnthropicStatusCode maps HTTP status codes to ErrorKind values.
-func classifyAnthropicStatusCode(statusCode int) sdk.ErrorKind {
-	switch {
-	case statusCode == http.StatusTooManyRequests:
-		return sdk.ErrorRateLimit
-	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
-		return sdk.ErrorAuth
-	case statusCode == http.StatusRequestTimeout:
-		return sdk.ErrorTimeout
-	case statusCode == http.StatusBadRequest || statusCode == http.StatusUnprocessableEntity:
-		return sdk.ErrorInvalidRequest
-	case statusCode == http.StatusServiceUnavailable:
-		return sdk.ErrorNotAvailable
-	default:
-		return sdk.ErrorInternal
-	}
+// claudeStreamMessage represents a JSONL message from the claude CLI stream-json output.
+type claudeStreamMessage struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype,omitempty"`
+	// For assistant messages
+	Role    string              `json:"role,omitempty"`
+	Content []claudeContentItem `json:"content,omitempty"`
+	// For result messages
+	Result          *string `json:"result,omitempty"`
+	StopReason      string  `json:"stop_reason,omitempty"`
+	TotalCostUSD    float64 `json:"total_cost_usd,omitempty"`
+	IsError         bool    `json:"is_error,omitempty"`
+	StructuredOutput any    `json:"structured_output,omitempty"`
+	// Usage
+	Usage map[string]any `json:"usage,omitempty"`
 }
 
-// classifyAnthropicError maps an Anthropic SDK error to an ErrorKind.
-func classifyAnthropicError(err error) sdk.ErrorKind {
+// claudeContentItem represents a content block in a claude response.
+type claudeContentItem struct {
+	Type  string `json:"type"`
+	Text  string `json:"text,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Input any    `json:"input,omitempty"`
+}
+
+// stripClaudeCodeEnv returns a copy of os.Environ() with CLAUDECODE removed.
+func stripClaudeCodeEnv() []string {
+	var env []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			env = append(env, e)
+		}
+	}
+	return env
+}
+
+// classifyClaudeError maps error messages to ErrorKind.
+func classifyClaudeError(err error) sdk.ErrorKind {
 	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") {
+	if strings.Contains(msg, "rate_limit") || strings.Contains(msg, "429") || strings.Contains(msg, "overloaded") {
+		return sdk.ErrorRateLimit
+	}
+	if strings.Contains(msg, "401") || strings.Contains(msg, "403") || strings.Contains(msg, "auth") {
+		return sdk.ErrorAuth
+	}
+	if strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out") {
 		return sdk.ErrorTimeout
 	}
-	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "no such host") {
-		return sdk.ErrorNotAvailable
+	if strings.Contains(msg, "400") || strings.Contains(msg, "invalid") {
+		return sdk.ErrorInvalidRequest
 	}
-
-	// Try to extract the HTTP status code from the apierror.Error struct.
-	// The SDK error string contains the HTTP status line; parse it numerically.
-	var code int
-	for _, part := range strings.Fields(err.Error()) {
-		if _, scanErr := fmt.Sscanf(part, "%d", &code); scanErr == nil && code >= 400 {
-			return classifyAnthropicStatusCode(code)
-		}
+	if strings.Contains(msg, "not found") || strings.Contains(msg, "not installed") {
+		return sdk.ErrorNotAvailable
 	}
 	return sdk.ErrorInternal
 }
 
-// Complete sends messages to the Anthropic API and returns a full response.
-// When opts.Schema is non-nil it is sent as the JSON-schema output format.
+// Complete sends a prompt to the claude CLI and collects the full response.
+// Uses ambient subscription login — no API key needed.
 func (c *ClaudeProvider) Complete(ctx context.Context, messages []sdk.Message, model sdk.ModelInfo, opts sdk.CompleteOpts) (*sdk.Response, error) {
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -174,66 +192,124 @@ func (c *ClaudeProvider) Complete(ctx context.Context, messages []sdk.Message, m
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout*float64(time.Second)))
 	defer cancel()
 
-	systemBlocks, msgParams := buildAnthropicMessages(messages)
-	if len(msgParams) == 0 {
-		return nil, sdk.NewAgentError("no user/assistant messages provided", sdk.ErrorInvalidRequest, nil)
-	}
-
-	params := anthropic.MessageNewParams{
-		Model:     model.ModelID,
-		MaxTokens: 16000,
-		Messages:  msgParams,
-		System:    systemBlocks,
-	}
-
-	if opts.Schema != nil {
-		schema, ok := opts.Schema.(map[string]any)
-		if !ok {
-			return nil, sdk.NewAgentError("schema must be map[string]any", sdk.ErrorInvalidRequest, nil)
-		}
-		params.OutputConfig = anthropic.OutputConfigParam{
-			Format: anthropic.JSONOutputFormatParam{
-				Schema: schema,
-			},
-		}
-	}
-
-	client := anthropic.NewClient(option.WithMaxRetries(0))
-	resp, err := client.Messages.New(ctx, params)
+	cliPath, err := findClaudeCLI()
 	if err != nil {
-		kind := classifyAnthropicError(err)
-		return nil, sdk.NewAgentError(fmt.Sprintf("anthropic complete error: %v", err), kind, nil)
+		return nil, sdk.NewAgentError(err.Error(), sdk.ErrorNotAvailable, nil)
 	}
 
-	text := extractTextFromContent(resp.Content)
+	system, prompt := buildPrompt(messages)
 
-	return &sdk.Response{
-		Text:           text,
-		ModelUsed:      model,
-		ConversationID: uuid.New(),
-		TurnID:         uuid.New(),
-		Usage: map[string]any{
-			"input_tokens":  resp.Usage.InputTokens,
-			"output_tokens": resp.Usage.OutputTokens,
-		},
-	}, nil
-}
+	// Build command
+	args := []string{"--output-format", "stream-json", "--verbose"}
+	if system != "" {
+		args = append(args, "--system-prompt", system)
+	}
+	if model.ModelID != "claude-opus-4-6" {
+		args = append(args, "--model", model.ModelID)
+	}
+	args = append(args, "--permission-mode", c.permissionMode)
+	args = append(args, "--max-turns", "1")
 
-// extractTextFromContent joins all text blocks from the response content.
-func extractTextFromContent(blocks []anthropic.ContentBlockUnion) string {
-	var parts []string
-	for _, block := range blocks {
-		if block.Type == "text" {
-			text := block.AsText()
-			if text.Text != "" {
-				parts = append(parts, text.Text)
+	if opts.MaxTurns > 0 {
+		// Override max-turns
+		args[len(args)-1] = fmt.Sprint(opts.MaxTurns)
+	}
+
+	// Structured output via --json-schema
+	if opts.Schema != nil {
+		schemaBytes, err := json.Marshal(opts.Schema)
+		if err != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("marshaling schema: %v", err), sdk.ErrorInvalidRequest, nil)
+		}
+		args = append(args, "--json-schema", string(schemaBytes))
+	}
+
+	// Pass prompt via -p flag
+	args = append(args, "-p", prompt)
+
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+	cmd.Env = stripClaudeCodeEnv()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, sdk.NewAgentError(
+				fmt.Sprintf("claude request timed out after %.0fs", timeout),
+				sdk.ErrorTimeout, nil,
+			)
+		}
+		errMsg := stderr.String()
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		kind := classifyClaudeError(fmt.Errorf("%s", errMsg))
+		return nil, sdk.NewAgentError(fmt.Sprintf("claude CLI error: %s", errMsg), kind, nil)
+	}
+
+	// Parse stream-json output
+	var textParts []string
+	var resultText string
+	var structuredOutput any
+	var usage map[string]any
+
+	scanner := bufio.NewScanner(&stdout)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var msg claudeStreamMessage
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue // skip unparseable lines
+		}
+
+		switch msg.Type {
+		case "result":
+			if msg.Result != nil {
+				resultText = *msg.Result
+			}
+			if msg.StructuredOutput != nil {
+				structuredOutput = msg.StructuredOutput
+			}
+			usage = msg.Usage
+		case "assistant":
+			for _, block := range msg.Content {
+				if block.Type == "text" && block.Text != "" {
+					textParts = append(textParts, block.Text)
+				}
+				if block.Type == "tool_use" && block.Name == "StructuredOutput" {
+					structuredOutput = block.Input
+				}
 			}
 		}
 	}
-	return strings.Join(parts, "")
+
+	// Prefer result text over intermediate text
+	text := resultText
+	if text == "" {
+		text = strings.Join(textParts, "")
+	}
+
+	resp := &sdk.Response{
+		Text:           strings.TrimSpace(text),
+		ModelUsed:      model,
+		ConversationID: uuid.New(),
+		TurnID:         uuid.New(),
+		Usage:          usage,
+	}
+
+	// If structured output was captured and schema was requested, attach it
+	if structuredOutput != nil && opts.Schema != nil {
+		return resp, nil
+	}
+
+	return resp, nil
 }
 
-// Stream sends messages to the Anthropic API and returns a channel of text chunks.
+// Stream sends a prompt to the claude CLI and yields response chunks.
 func (c *ClaudeProvider) Stream(ctx context.Context, messages []sdk.Message, model sdk.ModelInfo, opts sdk.StreamOpts) (<-chan sdk.StreamChunk, error) {
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -241,43 +317,66 @@ func (c *ClaudeProvider) Stream(ctx context.Context, messages []sdk.Message, mod
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout*float64(time.Second)))
 
-	systemBlocks, msgParams := buildAnthropicMessages(messages)
-	if len(msgParams) == 0 {
+	cliPath, err := findClaudeCLI()
+	if err != nil {
 		cancel()
-		return nil, sdk.NewAgentError("no user/assistant messages provided", sdk.ErrorInvalidRequest, nil)
+		return nil, sdk.NewAgentError(err.Error(), sdk.ErrorNotAvailable, nil)
 	}
 
-	params := anthropic.MessageNewParams{
-		Model:     model.ModelID,
-		MaxTokens: 16000,
-		Messages:  msgParams,
-		System:    systemBlocks,
+	system, prompt := buildPrompt(messages)
+
+	args := []string{"--output-format", "stream-json", "--verbose"}
+	if system != "" {
+		args = append(args, "--system-prompt", system)
+	}
+	if model.ModelID != "claude-opus-4-6" {
+		args = append(args, "--model", model.ModelID)
+	}
+	args = append(args, "--permission-mode", c.permissionMode)
+	args = append(args, "--max-turns", "1")
+	args = append(args, "-p", prompt)
+
+	cmd := exec.CommandContext(ctx, cliPath, args...)
+	cmd.Env = stripClaudeCodeEnv()
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return nil, sdk.NewAgentError(fmt.Sprintf("creating stdout pipe: %v", err), sdk.ErrorInternal, nil)
 	}
 
-	client := anthropic.NewClient(option.WithMaxRetries(0))
-	stream := client.Messages.NewStreaming(ctx, params)
+	if err := cmd.Start(); err != nil {
+		cancel()
+		kind := classifyClaudeError(err)
+		return nil, sdk.NewAgentError(fmt.Sprintf("starting claude CLI: %v", err), kind, nil)
+	}
 
 	ch := make(chan sdk.StreamChunk)
 	go func() {
 		defer close(ch)
 		defer cancel()
-		defer stream.Close()
+		defer cmd.Wait() //nolint:errcheck
 
-		for stream.Next() {
-			event := stream.Current()
-			if event.Type == "content_block_delta" {
-				delta := event.AsContentBlockDelta()
-				if delta.Delta.Type == "text_delta" {
-					text := delta.Delta.AsTextDelta().Text
-					if text != "" {
-						ch <- sdk.StreamChunk{Text: text}
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var msg claudeStreamMessage
+			if err := json.Unmarshal([]byte(line), &msg); err != nil {
+				continue
+			}
+			if msg.Type == "assistant" {
+				for _, block := range msg.Content {
+					if block.Type == "text" && block.Text != "" {
+						ch <- sdk.StreamChunk{Text: block.Text}
 					}
 				}
 			}
-		}
-
-		if err := stream.Err(); err != nil {
-			ch <- sdk.StreamChunk{Err: fmt.Errorf("anthropic stream error: %w", err)}
+			if msg.Type == "result" && msg.Result != nil && *msg.Result != "" {
+				ch <- sdk.StreamChunk{Text: *msg.Result}
+			}
 		}
 	}()
 

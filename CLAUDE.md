@@ -39,6 +39,18 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 | TTS | `capabilities/tts.py` — subprocess to `tts` |
 | STT | `capabilities/stt.py` — subprocess to `whisper` |
 
+## Auth Policy — NO API KEYS (except Nano Banana 2)
+
+**CRITICAL**: This project does NOT use API keys for Claude, Codex, or Gemini text providers. All three use ambient/subscription auth:
+- **Claude** — wraps `claude` CLI via `claude_agent_sdk` (Python) or subprocess (Go). Uses the logged-in Claude subscription. No `ANTHROPIC_API_KEY`.
+- **Codex** — wraps `codex` CLI. Uses ChatGPT auth. No `OPENAI_API_KEY`.
+- **Gemini text** — wraps `gemini` CLI. Uses Google auth. No `GEMINI_API_KEY` for text.
+- **Ollama** — local HTTP, no auth at all.
+
+The ONLY exception is **Nano Banana 2 image generation** which uses `GEMINI_API_KEY` for the Gemini API (image gen is not available via CLI).
+
+The Go OpenAI provider uses `OPENAI_API_KEY` because it calls the API directly (no codex CLI wrapper in Go). This is the one text provider exception in Go.
+
 ## Key Patterns
 
 - Base `Provider.stream()` is NOT async — subclasses implement as async generators (which are AsyncIterator, not coroutines returning AsyncIterator)
@@ -86,7 +98,7 @@ Full Go implementation in `go/` directory. See `go/README.md` for complete docum
 - TTS/STT use same CLI subprocesses as Python (tts, whisper)
 - Provider interface in root package, implementations in `provider/` subpackage
 - Capabilities in `capability/` subpackage wired to Agent via function fields (avoids circular imports)
-- Claude provider uses `anthropics/anthropic-sdk-go` — native structured output via `JSONOutputFormatParam`
+- Claude provider wraps `claude` CLI (ambient subscription login, no API key) — structured output via `--json-schema`
 - OpenAI provider uses `openai/openai-go` — native structured output via `ResponseFormatJSONSchemaParam`
 - Gemini provider uses `google.golang.org/genai` — native structured output via `ResponseJsonSchema` + `ResponseMIMEType`
 - Ollama provider uses raw HTTP (no heavy SDK dep) — structured output via `format` field in chat request
