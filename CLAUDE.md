@@ -51,7 +51,8 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
 - `./run install` command installs editable package system-wide
 - 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)
-- Image generation: `provider=None` (default) uses Spark (CUDA FLUX.1-schnell at spark:8100), `provider="mflux"` uses local Apple Silicon, `provider="nano-banana-2"` uses Gemini API. Configurable fallback chain via `image.fallback` in config.yaml — on primary failure, tries each fallback in order
+- Image generation: `provider=None` (default) uses Spark (CUDA at spark:8100), `provider="mflux"` uses local Apple Silicon, `provider="nano-banana-2"` uses Gemini API. Configurable fallback chain via `image.fallback` in config.yaml — on primary failure, tries each fallback in order
+- Image model selection: `model=` parameter picks between `z-image-turbo` and `flux-schnell` on spark; priority: explicit > `cfg.image.model` > `"z-image-turbo"` default. `ImageResult.model_used.model_id` reflects actual model
 - Image fallback refactor: `_generate_one()` dispatches per-provider, `generate_image()` loops `[primary] + fallbacks`. Each provider handles its own transparency
 - Spark image server runs on spark (GB10 CUDA) via arbiter (`spark:8400` for jobs, `spark:8100` for direct image gen)
 - Background removal (`transparent=True`): spark provider submits `background-remove` job to arbiter (BiRefNet on GPU); mflux provider runs BiRefNet locally (CPU); arbiter returns result in `result.data` (not `result.image`)
@@ -78,7 +79,10 @@ Full Go implementation in `go/` directory. See `go/README.md` for complete docum
 - **Vet**: `cd go && go vet ./...`
 - **Build CLI**: `cd go/cmd/agent-sdk && go build -o agent-sdk .`
 - **Module**: `github.com/darrenoakey/daz-agent-sdk/go`
-- Image gen uses Ollama HTTP (`x/z-image-turbo`) instead of mflux — pure Go, no Python deps
+- Image gen: Spark (default, CUDA on spark:8100), Ollama (local), Nano Banana 2 (Gemini API) — with fallback chain
+- Image model selection: `ImageOpts.Model` picks between `z-image-turbo` and `flux-schnell` on spark; priority: explicit > config > default
+- Background removal via arbiter (spark:8400) — `Agent.RemoveBackground()` and `Transparent` flag on image gen
+- Conversation.Say() accepts `WithSaySchema()` and `WithSayTier()` for structured output and per-call tier override
 - TTS/STT use same CLI subprocesses as Python (tts, whisper)
 - Provider interface in root package, implementations in `provider/` subpackage
 - Capabilities in `capability/` subpackage wired to Agent via function fields (avoids circular imports)
@@ -86,5 +90,5 @@ Full Go implementation in `go/` directory. See `go/README.md` for complete docum
 - OpenAI provider uses `openai/openai-go` — native structured output via `ResponseFormatJSONSchemaParam`
 - Gemini provider uses `google.golang.org/genai` — native structured output via `ResponseJsonSchema` + `ResponseMIMEType`
 - Ollama provider uses raw HTTP (no heavy SDK dep) — structured output via `format` field in chat request
-- Registration is done at call sites (main.go, tests), not via init()
-- 184 tests, all passing
+- Registration is done at call sites (main.go, tests), not via init(); CLI registers all 4 providers
+- 241 tests, all passing
