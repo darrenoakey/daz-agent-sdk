@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -362,6 +363,7 @@ func generateOllama(ctx context.Context, prompt string, opts ImageOpts, cfg *age
 func generateSpark(ctx context.Context, prompt string, opts ImageOpts, cfg *agentsdk.Config, timeout time.Duration, steps int) (*agentsdk.ImageResult, error) {
 	model := sparkModelName(opts, cfg)
 	arbURL := arbiterBaseURL(cfg)
+	log.Printf("[image-sdk] generateSpark: model=%s arbURL=%s width=%d height=%d steps=%d", model, arbURL, opts.Width, opts.Height, steps)
 
 	// Build job params
 	params := map[string]any{
@@ -455,7 +457,7 @@ func submitArbiterImageJob(ctx context.Context, arbURL, jobType, model string, p
 	if err != nil {
 		return nil, fmt.Errorf("reading arbiter submit response: %w", err)
 	}
-	if submitResp.StatusCode != http.StatusOK && submitResp.StatusCode != http.StatusCreated {
+	if submitResp.StatusCode != http.StatusOK && submitResp.StatusCode != http.StatusCreated && submitResp.StatusCode != http.StatusAccepted {
 		return nil, agentsdk.NewAgentError(
 			fmt.Sprintf("arbiter submit returned HTTP %d: %s", submitResp.StatusCode, string(submitBody)),
 			agentsdk.ErrorInternal, nil,
@@ -577,7 +579,7 @@ func removeBackgroundSpark(ctx context.Context, imagePath string, cfg *agentsdk.
 	if err != nil {
 		return "", fmt.Errorf("reading arbiter submit response: %w", err)
 	}
-	if submitResp.StatusCode != http.StatusOK && submitResp.StatusCode != http.StatusCreated {
+	if submitResp.StatusCode != http.StatusOK && submitResp.StatusCode != http.StatusCreated && submitResp.StatusCode != http.StatusAccepted {
 		return "", agentsdk.NewAgentError(
 			fmt.Sprintf("arbiter submit returned HTTP %d: %s", submitResp.StatusCode, string(submitBody)),
 			agentsdk.ErrorInternal, nil,
@@ -811,6 +813,7 @@ func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsd
 	}
 
 	chain := buildFallbackChain(primary, cfg)
+	log.Printf("[image-sdk] GenerateImage: provider=%s chain=%v width=%d height=%d steps=%d", primary, chain, opts.Width, opts.Height, steps)
 
 	if opts.Logger != nil {
 		opts.Logger.LogEvent("image_request", map[string]any{
@@ -856,6 +859,7 @@ func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsd
 		}
 
 		lastErr = err
+		log.Printf("[image-sdk] provider %s failed: %v", provider, err)
 		if opts.Logger != nil {
 			opts.Logger.LogEvent("image_provider_failed", map[string]any{
 				"provider": provider,
