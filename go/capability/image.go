@@ -252,7 +252,7 @@ func imageSize(width, height int) string {
 // directory exists. Returns the resolved path or an error.
 func resolveOutputPath(output string) (string, error) {
 	if output == "" {
-		tmpFile, err := os.CreateTemp("", "agent_sdk_img_*.png")
+		tmpFile, err := os.CreateTemp("", "agent_sdk_img_*.jpg")
 		if err != nil {
 			return "", fmt.Errorf("creating temp file: %w", err)
 		}
