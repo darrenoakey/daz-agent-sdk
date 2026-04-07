@@ -43,7 +43,7 @@ var ollamaImageModelInfo = agentsdk.ModelInfo{
 var sparkModelInfo = agentsdk.ModelInfo{
 	Provider:     "spark",
 	ModelID:      "z-image-turbo",
-	DisplayName:  "Spark Z-Image Turbo (FLUX.1-schnell)",
+	DisplayName:  "Spark z-image-turbo",
 	Capabilities: []agentsdk.Capability{agentsdk.CapabilityImage},
 	Tier:         agentsdk.TierHigh,
 }
@@ -182,11 +182,7 @@ func sparkModelName(opts ImageOpts, cfg *agentsdk.Config) string {
 func sparkModelInfoFor(modelName string) agentsdk.ModelInfo {
 	info := sparkModelInfo
 	info.ModelID = modelName
-	if modelName == "flux-schnell" {
-		info.DisplayName = "Spark FLUX.1-schnell"
-	} else {
-		info.DisplayName = "Spark Z-Image Turbo (FLUX.1-schnell)"
-	}
+	info.DisplayName = "Spark " + modelName
 	return info
 }
 

@@ -228,7 +228,7 @@ async def _generate_mflux(
 _SPARK_MODEL = ModelInfo(
     provider="spark",
     model_id="z-image-turbo",
-    display_name="Spark Z-Image Turbo (FLUX.1-schnell)",
+    display_name="Spark z-image-turbo",
     capabilities=frozenset({Capability.IMAGE}),
     tier=Tier.HIGH,
     supports_streaming=False,
