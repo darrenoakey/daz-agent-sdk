@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import fcntl
 import gc
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from arbiter_client import ArbiterClient, ArbiterError as _ArbiterError, stage_file as _stage_file
 from daz_agent_sdk.config import Config, get_image_steps, load_config
 from daz_agent_sdk.logging_ import ConversationLogger
 from daz_agent_sdk.types import AgentError, Capability, ErrorKind, ImageResult, ModelInfo, Tier
@@ -245,71 +247,25 @@ async def _remove_background_spark(
     timeout: float = 120.0,
     base_url: str | None = None,
 ) -> None:
-    import base64
-    import json
-    import time
-    from urllib.request import Request, urlopen
-    from urllib.error import URLError
-
     url = base_url or os.environ.get("ARBITER_URL") or _ARBITER_DEFAULT_URL
 
     def _call() -> None:
-        # submit background-remove job
+        client = ArbiterClient(base_url=url, timeout=30)
         image_b64 = base64.b64encode(image_path.read_bytes()).decode()
-        payload = json.dumps({
-            "type": "background-remove",
-            "params": {"image": image_b64},
-        }).encode()
-        req = Request(
-            f"{url}/v1/jobs",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read())
-        except URLError as e:
+            s = client.run("background-remove", timeout=timeout, image=image_b64)
+        except _ArbiterError as e:
+            if "Connection" in str(e) or "Unreachable" in str(e).lower():
+                raise AgentError(str(e), kind=ErrorKind.NOT_AVAILABLE) from e
+            raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
+        result = s.get("result", {})
+        image_b64_out = result.get("image") or result.get("data")
+        if not image_b64_out:
             raise AgentError(
-                f"Arbiter unreachable at {url}: {e}",
-                kind=ErrorKind.NOT_AVAILABLE,
-            ) from e
-
-        job_id = data.get("job_id")
-        if not job_id:
-            raise AgentError(
-                f"Arbiter returned no job_id: {data}",
+                f"Arbiter background-remove returned no image: {result}",
                 kind=ErrorKind.INTERNAL,
             )
-
-        # poll until done
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            poll_req = Request(f"{url}/v1/jobs/{job_id}", method="GET")
-            with urlopen(poll_req, timeout=10) as resp:
-                status_data = json.loads(resp.read())
-            status = status_data.get("status")
-            if status == "completed":
-                result = status_data.get("result", {})
-                image_b64_out = result.get("image") or result.get("data")
-                if not image_b64_out:
-                    raise AgentError(
-                        f"Arbiter background-remove returned no image: {status_data}",
-                        kind=ErrorKind.INTERNAL,
-                    )
-                image_path.write_bytes(base64.b64decode(image_b64_out))
-                return
-            if status == "failed":
-                raise AgentError(
-                    f"Arbiter background-remove failed: {status_data.get('error')}",
-                    kind=ErrorKind.INTERNAL,
-                )
-            time.sleep(1)
-
-        raise AgentError(
-            f"Arbiter background-remove timed out after {timeout}s",
-            kind=ErrorKind.TIMEOUT,
-        )
+        image_path.write_bytes(base64.b64decode(image_b64_out))
 
     loop = asyncio.get_event_loop()
     try:
@@ -343,16 +299,10 @@ async def _generate_spark(
     base_url: str | None = None,
     model: str = "z-image-turbo",
 ) -> None:
-    import base64
-    import json
-    import time as _time
-    from urllib.request import Request, urlopen
-    from urllib.error import URLError
-
     url = base_url or os.environ.get("ARBITER_URL") or _ARBITER_DEFAULT_URL
 
     def _call() -> None:
-        # build job params
+        client = ArbiterClient(base_url=url, timeout=30)
         params: dict[str, Any] = {
             "prompt": prompt,
             "width": width,
@@ -362,65 +312,33 @@ async def _generate_spark(
         job_type = "image-generate"
         if input_image is not None:
             job_type = "image-edit"
-            params["image"] = base64.b64encode(input_image.read_bytes()).decode()
+            # Stage via shared mount if configured, else base64
+            try:
+                params["image_file"] = _stage_file(input_image)
+            except Exception:
+                params["image"] = base64.b64encode(input_image.read_bytes()).decode()
 
-        # submit job to arbiter with model selection
-        payload = json.dumps({
-            "type": job_type,
-            "model": model,
-            "params": params,
-        }).encode()
-        req = Request(
-            f"{url}/v1/jobs",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        # Submit with model override in envelope (arbiter-specific field)
+        try:
+            job_id = client.submit_dict(job_type, params, model=model)
+        except _ArbiterError as e:
+            if "Connection" in str(e):
+                raise AgentError(str(e), kind=ErrorKind.NOT_AVAILABLE) from e
+            raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
 
         try:
-            with urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read())
-        except URLError as e:
-            raise AgentError(
-                f"Arbiter unreachable at {url}: {e}",
-                kind=ErrorKind.NOT_AVAILABLE,
-            ) from e
+            s = client.poll(job_id, interval=0.5, timeout=timeout)
+        except _ArbiterError as e:
+            raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
 
-        job_id = data.get("job_id")
-        if not job_id:
+        result = s.get("result", {})
+        image_b64 = result.get("image") or result.get("data")
+        if not image_b64:
             raise AgentError(
-                f"Arbiter returned no job_id: {data}",
+                f"Arbiter {job_type} returned no image: {result}",
                 kind=ErrorKind.INTERNAL,
             )
-
-        # poll until done
-        deadline = _time.monotonic() + timeout
-        while _time.monotonic() < deadline:
-            poll_req = Request(f"{url}/v1/jobs/{job_id}", method="GET")
-            with urlopen(poll_req, timeout=10) as resp:
-                status_data = json.loads(resp.read())
-            status = status_data.get("status")
-            if status == "completed":
-                result = status_data.get("result", {})
-                image_b64 = result.get("image") or result.get("data")
-                if not image_b64:
-                    raise AgentError(
-                        f"Arbiter {job_type} returned no image: {status_data}",
-                        kind=ErrorKind.INTERNAL,
-                    )
-                output_path.write_bytes(base64.b64decode(image_b64))
-                return
-            if status == "failed":
-                raise AgentError(
-                    f"Arbiter {job_type} failed: {status_data.get('error')}",
-                    kind=ErrorKind.INTERNAL,
-                )
-            _time.sleep(0.5)
-
-        raise AgentError(
-            f"Arbiter {job_type} timed out after {timeout}s",
-            kind=ErrorKind.TIMEOUT,
-        )
+        output_path.write_bytes(base64.b64decode(image_b64))
 
     loop = asyncio.get_event_loop()
     try:
@@ -702,16 +620,28 @@ async def generate_image(
 
     conv_id = conversation_id or uuid.uuid4()
 
-    primary = provider or "spark"
-    # build provider chain: primary + configured fallbacks (excluding primary)
-    fallbacks = [fb for fb in cfg.image.fallback if fb != primary]
-    chain = [primary] + fallbacks
+    # A model only exists on one provider — model without provider is an error.
+    if model and not provider:
+        raise AgentError(
+            f"model={model!r} specified without provider — a model requires its provider",
+            kind=ErrorKind.INVALID_REQUEST,
+        )
 
+    # When provider is explicit, use only that provider — no fallback chain.
+    if provider:
+        chain = [provider]
+        fallbacks: list[str] = []
+    else:
+        primary = "spark"
+        fallbacks = [fb for fb in cfg.image.fallback if fb != primary]
+        chain = [primary] + fallbacks
+
+    effective_primary = chain[0]
     if logger is not None:
         model_name = {
             "spark": _SPARK_MODEL.model_id,
             "mflux": "mflux-z-image-turbo",
-        }.get(primary, _NANO_BANANA_MODEL.model_id)
+        }.get(effective_primary, _NANO_BANANA_MODEL.model_id)
         logger.log_event(
             "image_request",
             prompt=prompt,
@@ -720,14 +650,14 @@ async def generate_image(
             model=model_name,
             tier=tier.value,
             transparent=transparent,
-            provider=primary,
+            provider=effective_primary,
             fallbacks=fallbacks,
         )
 
     last_error: AgentError | None = None
     for provider_name in chain:
         try:
-            if provider_name != primary and logger is not None:
+            if provider_name != effective_primary and logger is not None:
                 logger.log_event("image_fallback", provider=provider_name, reason=str(last_error))
             result = await _generate_one(
                 provider_name,

@@ -807,13 +807,22 @@ func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsd
 		steps = agentsdk.GetImageSteps(tier, cfg)
 	}
 
-	primary := opts.Provider
-	if primary == "" {
-		primary = "spark"
+	// A model only exists on one provider — model without provider is an error.
+	if opts.Model != "" && opts.Provider == "" {
+		return nil, fmt.Errorf("model=%q specified without provider — a model requires its provider", opts.Model)
 	}
 
-	chain := buildFallbackChain(primary, cfg)
-	log.Printf("[image-sdk] GenerateImage: provider=%s chain=%v width=%d height=%d steps=%d", primary, chain, opts.Width, opts.Height, steps)
+	// When provider is explicit, use only that provider — no fallback chain.
+	var chain []string
+	var primary string
+	if opts.Provider != "" {
+		primary = opts.Provider
+		chain = []string{primary}
+	} else {
+		primary = "spark"
+		chain = buildFallbackChain(primary, cfg)
+	}
+	log.Printf("[image-sdk] GenerateImage: provider=%s chain=%v width=%d height=%d steps=%d model=%s", primary, chain, opts.Width, opts.Height, steps, opts.Model)
 
 	if opts.Logger != nil {
 		opts.Logger.LogEvent("image_request", map[string]any{
