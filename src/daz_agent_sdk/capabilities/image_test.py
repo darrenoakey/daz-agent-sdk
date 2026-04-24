@@ -187,21 +187,78 @@ def test_generate_spark_transparent():
         assert img.mode == "RGBA"
 
 
-def test_generate_spark_default_provider():
-    """Verify spark is now the default provider."""
-    if not _spark_reachable():
-        pytest.skip("Spark image server not reachable")
+def test_generate_default_provider_is_codex():
+    """Verify codex is the default provider (native image_generation)."""
+    import shutil
+    if shutil.which("codex") is None:
+        pytest.skip("codex CLI not on PATH")
 
     result = asyncio.run(
         generate_image(
             "A blue circle",
             width=512,
             height=512,
-            timeout=300.0,
+            timeout=600.0,
         )
     )
 
-    assert result.model_used.provider == "spark"
+    assert result.model_used.provider == "codex"
+
+
+# ##################################################################
+# codex provider test — native image_generation via codex CLI
+
+
+def _codex_available() -> bool:
+    import shutil
+    return shutil.which("codex") is not None
+
+
+def test_generate_codex_image():
+    """Generate an image via codex's native image_generation tool."""
+    if not _codex_available():
+        pytest.skip("codex CLI not on PATH")
+
+    result = asyncio.run(
+        generate_image(
+            "A yellow star on a dark purple background",
+            width=1024,
+            height=1024,
+            provider="codex",
+            timeout=600.0,
+        )
+    )
+
+    assert result.path.exists(), f"Image not created: {result.path}"
+    assert result.path.stat().st_size > 1000
+    assert result.model_used.provider == "codex"
+    header = result.path.read_bytes()[:4]
+    assert header == b"\x89PNG", f"Expected PNG, got header {header!r}"
+
+
+def test_codex_rejects_input_image():
+    """codex provider should reject image editing (input image) with INVALID_REQUEST."""
+    if not _codex_available():
+        pytest.skip("codex CLI not on PATH")
+
+    import tempfile
+    # write a tiny fake PNG header so the path-exists check passes
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        tmp_path = tmp.name
+
+    with pytest.raises(AgentError) as exc_info:
+        asyncio.run(
+            generate_image(
+                "edit this",
+                width=512,
+                height=512,
+                image=tmp_path,
+                provider="codex",
+                timeout=30.0,
+            )
+        )
+    assert exc_info.value.kind == ErrorKind.INVALID_REQUEST
 
 
 # ##################################################################

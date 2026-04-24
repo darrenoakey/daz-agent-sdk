@@ -5,6 +5,8 @@ import base64
 import fcntl
 import gc
 import os
+import re
+import shutil as _shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -238,7 +240,7 @@ _SPARK_MODEL = ModelInfo(
 
 # ##################################################################
 # arbiter-based background removal on spark GPU
-_ARBITER_DEFAULT_URL = "http://spark:8400"
+_ARBITER_URL = "http://10.0.0.254:8400"
 
 
 async def _remove_background_spark(
@@ -247,7 +249,7 @@ async def _remove_background_spark(
     timeout: float = 120.0,
     base_url: str | None = None,
 ) -> None:
-    url = base_url or os.environ.get("ARBITER_URL") or _ARBITER_DEFAULT_URL
+    url = base_url or _ARBITER_URL
 
     def _call() -> None:
         client = ArbiterClient(base_url=url, timeout=30)
@@ -299,7 +301,7 @@ async def _generate_spark(
     base_url: str | None = None,
     model: str = "z-image-turbo",
 ) -> None:
-    url = base_url or os.environ.get("ARBITER_URL") or _ARBITER_DEFAULT_URL
+    url = base_url or _ARBITER_URL
 
     def _call() -> None:
         client = ArbiterClient(base_url=url, timeout=30)
@@ -365,6 +367,115 @@ _MFLUX_MODEL = ModelInfo(
     supports_structured=False,
     supports_conversation=False,
 )
+
+
+# ##################################################################
+# codex native image generation (via OpenAI backend through `codex exec`)
+# codex writes generated images to ~/.codex/generated_images/<session_id>/ig_*.png
+_CODEX_MODEL = ModelInfo(
+    provider="codex",
+    model_id="codex-image-generation",
+    display_name="Codex native image_generation",
+    capabilities=frozenset({Capability.IMAGE}),
+    tier=Tier.HIGH,
+    supports_streaming=False,
+    supports_structured=False,
+    supports_conversation=False,
+)
+
+_CODEX_IMAGE_DIR = Path.home() / ".codex" / "generated_images"
+_CODEX_SESSION_RE = re.compile(r"session id:\s*([0-9a-f-]+)", re.IGNORECASE)
+
+
+async def _generate_codex(
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    output_path: Path,
+    input_image: Path | None = None,
+    timeout: float = 300.0,
+) -> None:
+    if _shutil.which("codex") is None:
+        raise AgentError("codex CLI not found on PATH", kind=ErrorKind.NOT_AVAILABLE)
+    if input_image is not None:
+        # codex supports -i <file> but its native tool does not expose edit mode.
+        raise AgentError(
+            "codex provider does not support image editing (input image)",
+            kind=ErrorKind.INVALID_REQUEST,
+        )
+
+    # prompt codex to call its native image_generation tool only — no shell, no
+    # generate_image skill, no external scripts. we recover the file from its
+    # per-session generated_images directory.
+    instruction = (
+        "Use ONLY your native built-in image_generation tool. "
+        "Do NOT run any shell command. Do NOT call ~/bin/generate_image or any external script. "
+        f"Generate a single image at approximately {width}x{height} pixels for this prompt: "
+        f"{prompt}\n\n"
+        "After generation, simply confirm success in one short sentence."
+    )
+
+    # strip CLAUDECODE — it propagates from Claude Code sessions and causes
+    # CLI tools like codex to segfault (exit -11). see ~/.claude/CLAUDE.md.
+    child_env = os.environ.copy()
+    child_env.pop("CLAUDECODE", None)
+
+    proc = await asyncio.create_subprocess_exec(
+        "codex", "exec", "--dangerously-bypass-approvals-and-sandbox", instruction,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=child_env,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise AgentError(
+            f"codex image generation timed out after {timeout}s",
+            kind=ErrorKind.TIMEOUT,
+        )
+
+    stdout = stdout_bytes.decode(errors="replace")
+    stderr = stderr_bytes.decode(errors="replace")
+
+    if proc.returncode != 0:
+        raise AgentError(
+            f"codex exited with code {proc.returncode}: {stderr or stdout}",
+            kind=ErrorKind.INTERNAL,
+        )
+
+    # locate the generated file — codex writes the session id + prompt to
+    # stderr, and only the final agent message to stdout.
+    match = _CODEX_SESSION_RE.search(stderr) or _CODEX_SESSION_RE.search(stdout)
+    candidates: list[Path] = []
+    if match:
+        session_dir = _CODEX_IMAGE_DIR / match.group(1)
+        if session_dir.is_dir():
+            candidates = sorted(
+                session_dir.glob("ig_*.png"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+    if not candidates and _CODEX_IMAGE_DIR.is_dir():
+        # fallback: newest file anywhere under generated_images
+        all_pngs = list(_CODEX_IMAGE_DIR.rglob("ig_*.png"))
+        if all_pngs:
+            candidates = sorted(all_pngs, key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not candidates:
+        raise AgentError(
+            f"codex did not produce a generated image. stdout tail: {stdout[-500:]!r}",
+            kind=ErrorKind.INTERNAL,
+        )
+
+    newest = candidates[0]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _shutil.copyfile(newest, output_path)
 
 
 # ##################################################################
@@ -443,6 +554,27 @@ async def _generate_one(
         return ImageResult(
             path=output_path,
             model_used=_MFLUX_MODEL,
+            conversation_id=conv_id,
+            prompt=prompt,
+            width=width,
+            height=height,
+        )
+
+    # codex — native image_generation tool via OpenAI backend
+    if provider_name == "codex":
+        await _generate_codex(
+            prompt,
+            width=width,
+            height=height,
+            output_path=output_path,
+            input_image=input_image,
+            timeout=timeout,
+        )
+        if transparent:
+            await _remove_background(output_path, timeout=timeout)
+        return ImageResult(
+            path=output_path,
+            model_used=_CODEX_MODEL,
             conversation_id=conv_id,
             prompt=prompt,
             width=width,
@@ -632,8 +764,11 @@ async def generate_image(
         chain = [provider]
         fallbacks: list[str] = []
     else:
-        primary = "spark"
-        fallbacks = [fb for fb in cfg.image.fallback if fb != primary]
+        primary = "codex"
+        # default fallback order when the config doesn't specify one
+        default_fallbacks = ["spark", "nano-banana-2", "mflux"]
+        configured = list(cfg.image.fallback) if cfg.image.fallback else default_fallbacks
+        fallbacks = [fb for fb in configured if fb != primary]
         chain = [primary] + fallbacks
 
     effective_primary = chain[0]
@@ -641,6 +776,7 @@ async def generate_image(
         model_name = {
             "spark": _SPARK_MODEL.model_id,
             "mflux": "mflux-z-image-turbo",
+            "codex": _CODEX_MODEL.model_id,
         }.get(effective_primary, _NANO_BANANA_MODEL.model_id)
         logger.log_event(
             "image_request",
