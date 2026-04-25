@@ -22,6 +22,7 @@ const (
 	TierLow          Tier = "low"
 	TierFreeFast     Tier = "free_fast"
 	TierFreeThinking Tier = "free_thinking"
+	TierSummaries    Tier = "summaries"
 )
 
 // Capability describes what kind of work a model can do.
@@ -34,6 +35,7 @@ const (
 	CapabilityImage      Capability = "image"
 	CapabilityTTS        Capability = "tts"
 	CapabilitySTT        Capability = "stt"
+	CapabilityEmbedding  Capability = "embedding"
 )
 
 // ErrorKind classifies errors for fallback decision making.
@@ -111,6 +113,18 @@ type ImageResult struct {
 	Prompt         string    `json:"prompt"`
 	Width          int       `json:"width"`
 	Height         int       `json:"height"`
+}
+
+// EmbeddingResult is the result of an embed call. Embeddings are one
+// float64 vector per input text; Dimension is len(Embeddings[0]) when
+// populated. Task echoes the nomic-embed-text prefix mode used
+// ("search_document", "search_query", "classification", "clustering").
+type EmbeddingResult struct {
+	Embeddings [][]float64    `json:"embeddings"`
+	ModelUsed  ModelInfo      `json:"model_used"`
+	Dimension  int            `json:"dimension"`
+	Task       string         `json:"task"`
+	Usage      map[string]any `json:"usage,omitempty"`
 }
 
 // AudioResult is the result of a TTS call.

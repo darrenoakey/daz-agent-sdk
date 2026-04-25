@@ -15,6 +15,7 @@ func TestTierValues(t *testing.T) {
 		{TierLow, "low"},
 		{TierFreeFast, "free_fast"},
 		{TierFreeThinking, "free_thinking"},
+		{TierSummaries, "summaries"},
 	}
 	for _, tt := range tests {
 		if string(tt.tier) != tt.want {

@@ -27,6 +27,21 @@ type Agent struct {
 	// RemoveBackgroundFn is the function called by RemoveBackground().
 	// Set by capability package registration or by the caller directly.
 	RemoveBackgroundFn func(ctx context.Context, imagePath string, opts RemoveBackgroundCallOpts) (string, error)
+
+	// EmbedFn is the function called by Embed(). Set by the CLI/caller to
+	// delegate to the arbiter provider's Embed method, avoiding a circular
+	// import between the root package and provider.
+	EmbedFn func(ctx context.Context, texts []string, opts EmbedCallOpts) (*EmbeddingResult, error)
+}
+
+// EmbedCallOpts holds parameters for the embedding function. Mirrors the
+// arbiter provider's EmbedOpts but lives in the root package so callers
+// don't have to import the provider package.
+type EmbedCallOpts struct {
+	Task      string
+	BatchSize int
+	Timeout   float64
+	Config    *Config
 }
 
 // ImageCallOpts holds parameters for the image generation function.
@@ -155,9 +170,13 @@ func WithAskMaxTurns(n int) AskOption {
 // model are both specified via options, uses that pair directly. Otherwise
 // resolves the tier chain and uses fallback.
 func (a *Agent) Ask(ctx context.Context, prompt string, opts ...AskOption) (*Response, error) {
+	// timeout: 0 = no wall-clock limit. The arbiter tier is queue-backed and
+	// legitimate jobs can sit behind hundreds of others for hours. Callers
+	// that need a real deadline should pass WithAskTimeout explicitly or
+	// cancel the supplied context.
 	o := &askOpts{
 		tier:    TierHigh,
-		timeout: 300.0,
+		timeout: 0.0,
 	}
 	for _, fn := range opts {
 		fn(o)
@@ -340,6 +359,42 @@ func (a *Agent) Transcribe(ctx context.Context, audioPath string, opts Transcrib
 	})
 }
 
+// EmbedOpts holds optional parameters for Agent.Embed.
+type EmbedOpts struct {
+	// Task selects the nomic-embed-text prefix mode:
+	// "search_document", "search_query", "classification", "clustering".
+	// Defaults to "search_document".
+	Task string
+	// BatchSize controls how many texts the arbiter adapter batches per
+	// GPU forward pass. Defaults to 16.
+	BatchSize int
+	// Timeout is the overall deadline in seconds for the submit+poll
+	// cycle. Defaults to 600 (cold model-load headroom).
+	Timeout float64
+}
+
+// Embed produces vector embeddings for the given texts via the arbiter's
+// embed-text adapter (nomic-embed-text-v1.5, 768-dim, L2-normalized).
+// Returns one EmbeddingResult with Embeddings[i] corresponding to texts[i].
+func (a *Agent) Embed(ctx context.Context, texts []string, opts ...EmbedOpts) (*EmbeddingResult, error) {
+	if a.EmbedFn == nil {
+		return nil, NewAgentError(
+			"embed capability not registered; set Agent.EmbedFn via CLI wiring or direct assignment",
+			ErrorNotAvailable, nil,
+		)
+	}
+	o := EmbedOpts{}
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return a.EmbedFn(ctx, texts, EmbedCallOpts{
+		Task:      o.Task,
+		BatchSize: o.BatchSize,
+		Timeout:   o.Timeout,
+		Config:    a.config,
+	})
+}
+
 // ModelsOption configures a Models call via the functional options pattern.
 type ModelsOption func(*modelsOpts)
 
@@ -373,7 +428,7 @@ func (a *Agent) Models(ctx context.Context, opts ...ModelsOption) ([]ModelInfo, 
 	// Collect across all tiers, deduplicating by qualified name
 	seen := map[string]bool{}
 	var results []ModelInfo
-	allTiers := []Tier{TierVeryHigh, TierHigh, TierMedium, TierLow, TierFreeFast, TierFreeThinking}
+	allTiers := []Tier{TierVeryHigh, TierHigh, TierMedium, TierLow, TierFreeFast, TierFreeThinking, TierSummaries}
 	for _, t := range allTiers {
 		for _, m := range GetModelsForTier(t, o.capability, a.config) {
 			qn := m.QualifiedName()

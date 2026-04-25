@@ -38,7 +38,7 @@ def test_tier_values() -> None:
 # capability values
 # verify all six capabilities exist
 def test_capability_values() -> None:
-    assert len(Capability) == 6
+    assert len(Capability) == 7
     assert Capability.TEXT.value == "text"
     assert Capability.IMAGE.value == "image"
 

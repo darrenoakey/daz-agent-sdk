@@ -23,6 +23,7 @@ class Tier(Enum):
     LOW = "low"
     FREE_FAST = "free_fast"
     FREE_THINKING = "free_thinking"
+    SUMMARIES = "summaries"
 
 
 # ##################################################################
@@ -35,6 +36,7 @@ class Capability(Enum):
     IMAGE = "image"
     TTS = "tts"
     STT = "stt"
+    EMBEDDING = "embedding"
 
 
 # ##################################################################
@@ -110,6 +112,19 @@ class Response:
 @dataclass
 class StructuredResponse(Response):
     parsed: Any = None
+
+
+# ##################################################################
+# embedding result
+# result of an embed() call — one float vector per input text, plus
+# the model that produced them and the embedding dimension.
+@dataclass
+class EmbeddingResult:
+    embeddings: list[list[float]]
+    model_used: ModelInfo
+    dimension: int
+    task: str = "search_document"
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 # ##################################################################
