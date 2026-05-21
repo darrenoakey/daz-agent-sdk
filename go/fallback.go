@@ -221,7 +221,41 @@ func ExecuteWithFallback(
 				)
 			}
 
-			// TIMEOUT and NOT_AVAILABLE: no point retrying same provider
+			// Policy: never give up on a transient provider fault when this
+			// is the only provider in the chain. We keep spinning with
+			// exponential backoff capped at 30s until the caller cancels
+			// through the context. For multi-provider chains the break
+			// below still lets the cascade move on quickly.
+			isLastProvider := index == len(chain)-1
+			isSingleProviderChain := len(chain) == 1
+			retryableTransient := kind == ErrorTimeout || kind == ErrorNotAvailable || kind == ErrorInternal || kind == ErrorRateLimit
+			if isSingleProviderChain && retryableTransient {
+				delay := math.Min(retryBase*math.Pow(2, float64(retry)), 30.0)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(delay * float64(time.Second))):
+				}
+				providerRetries = retry + 2 // extend loop one more iteration
+				continue
+			}
+
+			// Multi-provider chain: if this is the LAST provider and the
+			// fault is transient, also spin rather than giving up on the
+			// whole chain. Upstream callers expect eventual success.
+			if isLastProvider && retryableTransient && retry >= providerRetries-1 {
+				delay := math.Min(retryBase*math.Pow(2, float64(retry)), 30.0)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(delay * float64(time.Second))):
+				}
+				providerRetries = retry + 2
+				continue
+			}
+
+			// TIMEOUT and NOT_AVAILABLE: no point retrying same provider when
+			// there are alternative providers below — let the chain move on.
 			if kind == ErrorTimeout || kind == ErrorNotAvailable {
 				break
 			}

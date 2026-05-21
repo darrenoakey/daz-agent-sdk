@@ -55,18 +55,28 @@ def test_default_tier_low(tmp_path: Path) -> None:
 def test_default_tier_free_fast(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
     chain = cfg.tiers["free_fast"].chain
-    assert chain[0] == "ollama:qwen3-8b"
+    assert chain[0] == "arbiter:gemma4-26b"
 
 
 def test_default_tier_free_thinking(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
     chain = cfg.tiers["free_thinking"].chain
-    assert chain[0] == "ollama:qwen3-30b-32k"
+    assert chain[0] == "arbiter:gemma4-26b"
+
+
+def test_default_tier_low_includes_arbiter(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "absent.yaml")
+    chain = cfg.tiers["low"].chain
+    assert "arbiter:gemma4-26b" in chain
+
+
+def test_default_provider_arbiter(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "absent.yaml")
+    assert cfg.providers["arbiter"]["base_url"] == "http://10.0.0.254:8400"
 
 
 # ##################################################################
 # default image config
-# verify default model and step counts for each image tier
 def test_default_image_model(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
     assert cfg.image.model == "z-image-turbo"
@@ -172,7 +182,6 @@ def test_custom_image_model(tmp_path: Path) -> None:
     assert cfg.image.tiers["medium"].steps == 10
     assert cfg.image.tiers["low"].steps == 2
 
-
 def test_custom_provider_config(tmp_path: Path) -> None:
     config_file = tmp_path / "config.yaml"
     data = {
@@ -248,13 +257,13 @@ def test_get_tier_chain_low(tmp_path: Path) -> None:
 def test_get_tier_chain_free_fast(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
     chain = get_tier_chain(Tier.FREE_FAST, cfg)
-    assert chain[0] == "ollama:qwen3-8b"
+    assert chain[0] == "arbiter:gemma4-26b"
 
 
 def test_get_tier_chain_free_thinking(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
     chain = get_tier_chain(Tier.FREE_THINKING, cfg)
-    assert chain[0] == "ollama:qwen3-30b-32k"
+    assert chain[0] == "arbiter:gemma4-26b"
 
 
 def test_get_tier_chain_returns_copy(tmp_path: Path) -> None:

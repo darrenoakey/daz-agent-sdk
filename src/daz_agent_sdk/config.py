@@ -163,14 +163,13 @@ class Config:
             "low": [
                 "claude:claude-haiku-4-5-20251001",
                 "gemini:gemini-2.5-flash-lite",
-                "ollama:qwen3-8b",
+                "arbiter:gemma4-26b",
             ],
             "free_fast": [
-                "ollama:qwen3-8b",
+                "arbiter:gemma4-26b",
             ],
             "free_thinking": [
-                "ollama:qwen3-30b-32k",
-                "ollama:deepseek-r1:14b",
+                "arbiter:gemma4-26b",
             ],
         }
         for tier_key, chain in defaults.items():
@@ -182,6 +181,7 @@ class Config:
             "codex": {},
             "gemini": {},
             "ollama": {"base_url": "http://localhost:11434"},
+            "arbiter": {"base_url": "http://10.0.0.254:8400"},
         }
         for provider_key, provider_cfg in default_providers.items():
             if provider_key not in self.providers:

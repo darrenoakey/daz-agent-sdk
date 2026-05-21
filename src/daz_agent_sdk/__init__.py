@@ -1,4 +1,4 @@
-__version__ = "0.2.12"
+__version__ = "0.2.13"
 
 from daz_agent_sdk.conversation import Conversation
 from daz_agent_sdk.core import Agent
@@ -6,6 +6,7 @@ from daz_agent_sdk.types import (
     AgentError,
     AudioResult,
     Capability,
+    EmbeddingResult,
     ErrorKind,
     ImageResult,
     Message,
@@ -24,6 +25,7 @@ __all__ = [
     "AudioResult",
     "Capability",
     "Conversation",
+    "EmbeddingResult",
     "ErrorKind",
     "ImageResult",
     "Message",

@@ -23,7 +23,6 @@ from daz_agent_sdk.types import (
     Tier,
 )
 
-
 # ##################################################################
 # codex models
 # static list of codex model variants — uses ChatGPT auth via codex CLI

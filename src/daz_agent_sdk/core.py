@@ -15,6 +15,7 @@ from daz_agent_sdk.types import (
     AgentError,
     AudioResult,
     Capability,
+    EmbeddingResult,
     ErrorKind,
     ImageResult,
     Message,
@@ -166,7 +167,7 @@ class Agent:
         width: int,
         height: int,
         output: str | Path | None = None,
-        image: str | Path | None = None,
+        image: str | Path | list[str | Path] | None = None,
         tier: Tier = Tier.HIGH,
         transparent: bool = False,
         timeout: float = 300.0,
@@ -248,6 +249,64 @@ class Agent:
         arbiter_url = self._config.providers.get("arbiter", {}).get("base_url") if self._config else None
         await _remove_background_spark(image_path, timeout=timeout, base_url=arbiter_url)
         return image_path
+
+    # ##################################################################
+    # embed
+    # produce vector embeddings for a list of texts via the arbiter's
+    # embed-text adapter on spark. Returns an EmbeddingResult with one
+    # vector per input. Task may be "search_document", "search_query",
+    # "classification", or "clustering" — nomic-embed-text uses prefix
+    # instructions and this value determines the prefix used.
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        task: str = "search_document",
+        batch_size: int = 16,
+        timeout: float = 600.0,
+    ) -> EmbeddingResult:
+        prov = get_provider("arbiter")
+        if prov is None:
+            raise AgentError(
+                "Arbiter provider is not available for embeddings",
+                kind=ErrorKind.NOT_AVAILABLE,
+            )
+        if not hasattr(prov, "embed"):
+            raise AgentError(
+                "Arbiter provider does not implement embed()",
+                kind=ErrorKind.INTERNAL,
+            )
+
+        raw = await prov.embed(  # type: ignore[attr-defined]
+            texts,
+            task=task,
+            batch_size=batch_size,
+            timeout=timeout,
+        )
+
+        embeddings = raw.get("embeddings") or []
+        dimension = int(raw.get("dimension") or (len(embeddings[0]) if embeddings else 0))
+        model_id = raw.get("model_repository") or "embed-text"
+
+        model_info = ModelInfo(
+            provider="arbiter",
+            model_id="embed-text",
+            display_name=model_id,
+            capabilities=frozenset({Capability.EMBEDDING}),
+            tier=Tier.FREE_FAST,
+            supports_streaming=False,
+            supports_structured=False,
+            supports_conversation=False,
+            supports_tools=False,
+        )
+
+        return EmbeddingResult(
+            embeddings=embeddings,
+            model_used=model_info,
+            dimension=dimension,
+            task=task,
+            usage={"elapsed_ms": raw.get("elapsed_ms"), "count": raw.get("count")},
+        )
 
     # ##################################################################
     # models

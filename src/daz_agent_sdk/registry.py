@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from daz_agent_sdk.config import Config, get_tier_chain
+from daz_agent_sdk.config import Config, get_tier_chain, load_config
 from daz_agent_sdk.providers.base import Provider
 from daz_agent_sdk.types import Capability, ModelInfo, Tier
 
@@ -14,6 +14,7 @@ _PROVIDER_MODULES: dict[str, str] = {
     "ollama": "daz_agent_sdk.providers.ollama",
     "gemini": "daz_agent_sdk.providers.gemini",
     "codex": "daz_agent_sdk.providers.codex",
+    "arbiter": "daz_agent_sdk.providers.arbiter",
 }
 
 # ##################################################################
@@ -52,7 +53,17 @@ def _load_provider(name: str) -> Provider | None:
                     break
         if cls is None:
             return None
-        instance = cls()
+        # pass base_url from config if the provider accepts it
+        try:
+            cfg = load_config()
+            provider_cfg = cfg.providers.get(name, {})
+            base_url = provider_cfg.get("base_url")
+            if base_url is not None:
+                instance = cls(base_url=base_url)
+            else:
+                instance = cls()
+        except TypeError:
+            instance = cls()
         return instance
     except Exception:
         return None

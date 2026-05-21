@@ -246,6 +246,54 @@ def test_resolve_model_missing_provider_no_tier():
 
 
 # ##################################################################
+# provider base_url from config tests
+
+
+def test_load_provider_passes_base_url_from_config():
+    # a provider that accepts base_url and records what it received
+    captured = {}
+
+    class UrlCapturingProvider(Provider):
+        name = "urlcap"
+
+        def __init__(self, base_url: str = "http://default:1234") -> None:
+            captured["base_url"] = base_url
+
+        async def available(self) -> bool:
+            return True
+
+        async def list_models(self) -> list[ModelInfo]:
+            return []
+
+        async def complete(self, messages, model, **kwargs):
+            raise NotImplementedError
+
+        async def stream(self, messages, model, **kwargs):  # type: ignore[override]
+            raise NotImplementedError
+            yield
+
+    mod = types.ModuleType("daz_agent_sdk.providers.urlcap")
+    mod.UrlcapProvider = UrlCapturingProvider  # type: ignore[attr-defined]
+    sys.modules["daz_agent_sdk.providers.urlcap"] = mod
+    register_provider_module("urlcap", "daz_agent_sdk.providers.urlcap")
+
+    from unittest.mock import patch
+    from daz_agent_sdk.config import Config
+
+    fake_config = Config(providers={"urlcap": {"base_url": "http://custom-host:9999"}})
+    with patch("daz_agent_sdk.registry.load_config", return_value=fake_config):
+        refresh_providers()
+        provider = get_provider("urlcap")
+
+    assert provider is not None
+    assert captured["base_url"] == "http://custom-host:9999"
+
+    sys.modules.pop("daz_agent_sdk.providers.urlcap", None)
+    _PROVIDER_MODULES.pop("urlcap", None)
+    refresh_providers()
+
+
+# ##################################################################
 # register provider module tests
 
 

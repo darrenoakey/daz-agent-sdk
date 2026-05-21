@@ -385,6 +385,8 @@ _CODEX_MODEL = ModelInfo(
 
 _CODEX_IMAGE_DIR = Path.home() / ".codex" / "generated_images"
 _CODEX_SESSION_RE = re.compile(r"session id:\s*([0-9a-f-]+)", re.IGNORECASE)
+# JSONL emits {"type":"thread.started","thread_id":"<uuid>"} as the very first event
+_CODEX_THREAD_RE = re.compile(r'"thread_id"\s*:\s*"([0-9a-f-]+)"', re.IGNORECASE)
 
 
 async def _generate_codex(
@@ -393,36 +395,86 @@ async def _generate_codex(
     width: int,
     height: int,
     output_path: Path,
-    input_image: Path | None = None,
+    input_image: Path | list[Path] | None = None,
     timeout: float = 300.0,
 ) -> None:
     if _shutil.which("codex") is None:
         raise AgentError("codex CLI not found on PATH", kind=ErrorKind.NOT_AVAILABLE)
-    if input_image is not None:
-        # codex supports -i <file> but its native tool does not expose edit mode.
-        raise AgentError(
-            "codex provider does not support image editing (input image)",
-            kind=ErrorKind.INVALID_REQUEST,
-        )
 
-    # prompt codex to call its native image_generation tool only — no shell, no
-    # generate_image skill, no external scripts. we recover the file from its
-    # per-session generated_images directory.
-    instruction = (
-        "Use ONLY your native built-in image_generation tool. "
-        "Do NOT run any shell command. Do NOT call ~/bin/generate_image or any external script. "
-        f"Generate a single image at approximately {width}x{height} pixels for this prompt: "
-        f"{prompt}\n\n"
-        "After generation, simply confirm success in one short sentence."
-    )
+    input_images: list[Path] = []
+    if input_image is not None:
+        if isinstance(input_image, list):
+            input_images = [Path(p) for p in input_image]
+        else:
+            input_images = [Path(input_image)]
+        for ip in input_images:
+            if not ip.exists():
+                raise AgentError(
+                    f"Input image not found: {ip}",
+                    kind=ErrorKind.INVALID_REQUEST,
+                )
+
+    # prompt codex to call its native image_gen.imagegen tool only — no shell,
+    # no generate_image skill, no external scripts. The tool schema only accepts
+    # a `prompt` string, so size is mentioned in-prose. We recover the file from
+    # the per-session ~/.codex/generated_images directory.
+    aspect_hint = ""
+    if width and height:
+        if width > height:
+            aspect_hint = " (landscape orientation)"
+        elif height > width:
+            aspect_hint = " (portrait orientation)"
+        else:
+            aspect_hint = " (square)"
+
+    if input_images:
+        action = (
+            "EDIT the attached image" if len(input_images) == 1
+            else f"COMBINE/EDIT the {len(input_images)} attached images into a single new image"
+        )
+        instruction = (
+            f"You MUST call your built-in `image_gen.imagegen` tool exactly once to {action}. "
+            "It is a NATIVE tool that you DO have access to in this environment — there is no need "
+            "to apologise or claim you cannot generate images. Do NOT run any shell command. "
+            "Do NOT call `~/bin/generate_image`, the `generate_image` skill, the `arbiter` tool, "
+            "or any external script. The ONLY acceptable action is invoking `image_gen.imagegen` "
+            "with a single `prompt` argument that fully describes the desired output image "
+            f"(approx {width}x{height}{aspect_hint}). Use the attached image(s) as visual reference. "
+            f"\n\nEdit description: {prompt}\n\n"
+            "After the tool returns, reply with one short sentence confirming success."
+        )
+    else:
+        instruction = (
+            "You MUST call your built-in `image_gen.imagegen` tool exactly once. "
+            "It is a NATIVE tool that you DO have access to in this environment — there is no "
+            "need to apologise or claim you cannot generate images. Do NOT run any shell command. "
+            "Do NOT call `~/bin/generate_image`, the `generate_image` skill, the `arbiter` tool, "
+            "or any external script. The ONLY acceptable action is invoking `image_gen.imagegen` "
+            "with a single `prompt` argument that fully describes the desired image "
+            f"(approx {width}x{height}{aspect_hint}). "
+            f"\n\nDesired image: {prompt}\n\n"
+            "After the tool returns, reply with one short sentence confirming success."
+        )
 
     # strip CLAUDECODE — it propagates from Claude Code sessions and causes
     # CLI tools like codex to segfault (exit -11). see ~/.claude/CLAUDE.md.
     child_env = os.environ.copy()
     child_env.pop("CLAUDECODE", None)
 
+    cmd: list[str] = [
+        "codex", "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--json",
+        "-m", "gpt-5.3-codex",
+    ]
+    for ip in input_images:
+        cmd.extend(["-i", str(ip)])
+    cmd.extend(["--", instruction])
+
     proc = await asyncio.create_subprocess_exec(
-        "codex", "exec", "--dangerously-bypass-approvals-and-sandbox", instruction,
+        *cmd,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -449,9 +501,14 @@ async def _generate_codex(
             kind=ErrorKind.INTERNAL,
         )
 
-    # locate the generated file — codex writes the session id + prompt to
-    # stderr, and only the final agent message to stdout.
-    match = _CODEX_SESSION_RE.search(stderr) or _CODEX_SESSION_RE.search(stdout)
+    # locate the generated file — with --json, codex emits a thread.started
+    # event with the session id as the first JSON line on stdout. Fall back to
+    # the older "session id:" prose on stderr for compatibility.
+    match = (
+        _CODEX_THREAD_RE.search(stdout)
+        or _CODEX_SESSION_RE.search(stderr)
+        or _CODEX_SESSION_RE.search(stdout)
+    )
     candidates: list[Path] = []
     if match:
         session_dir = _CODEX_IMAGE_DIR / match.group(1)
@@ -489,7 +546,7 @@ async def _generate_one(
     width: int,
     height: int,
     output_path: Path,
-    input_image: Path | None,
+    input_image: Path | list[Path] | None,
     tier: Tier,
     transparent: bool,
     timeout: float,
@@ -498,6 +555,13 @@ async def _generate_one(
     model: str | None = None,
     steps_override: int | None = None,
 ) -> ImageResult:
+    # most providers accept a single input image only; pick the first when
+    # given a list. codex handles the full list natively.
+    first_input: Path | None = None
+    if isinstance(input_image, list):
+        first_input = input_image[0] if input_image else None
+    else:
+        first_input = input_image
     # spark — CUDA-accelerated remote GPU
     if provider_name == "spark":
         steps = steps_override if steps_override and steps_override > 0 else get_image_steps(tier, cfg)
@@ -509,7 +573,7 @@ async def _generate_one(
             height=height,
             steps=steps,
             output_path=output_path,
-            input_image=input_image,
+            input_image=first_input,
             transparent=transparent,
             timeout=timeout,
             base_url=spark_url,
@@ -546,7 +610,7 @@ async def _generate_one(
             height=height,
             steps=steps,
             output_path=output_path,
-            input_image=input_image,
+            input_image=first_input,
             timeout=timeout,
         )
         if transparent:
@@ -588,7 +652,7 @@ async def _generate_one(
             width=width,
             height=height,
             output_path=output_path,
-            input_image=input_image,
+            input_image=first_input,
             transparent=transparent,
             timeout=timeout,
             conv_id=conv_id,
@@ -716,7 +780,7 @@ async def generate_image(
     width: int,
     height: int,
     output: str | Path | None = None,
-    image: str | Path | None = None,
+    image: str | Path | list[str | Path] | None = None,
     tier: Tier = Tier.HIGH,
     transparent: bool = False,
     timeout: float = 120.0,
@@ -729,15 +793,28 @@ async def generate_image(
 ) -> ImageResult:
     cfg = config or load_config()
 
-    # validate input image if provided
-    input_image_path: Path | None = None
+    # validate input image(s) if provided. accept a single path or a list.
+    # for the codex provider, multiple input images are forwarded as multiple
+    # `-i` flags; other providers will use the first image only.
+    input_image_path: Path | list[Path] | None = None
     if image is not None:
-        input_image_path = Path(image)
-        if not input_image_path.exists():
-            raise AgentError(
-                f"Input image not found: {input_image_path}",
-                kind=ErrorKind.INVALID_REQUEST,
-            )
+        if isinstance(image, list):
+            paths = [Path(p) for p in image]
+            for p in paths:
+                if not p.exists():
+                    raise AgentError(
+                        f"Input image not found: {p}",
+                        kind=ErrorKind.INVALID_REQUEST,
+                    )
+            input_image_path = paths if len(paths) > 1 else (paths[0] if paths else None)
+        else:
+            single = Path(image)
+            if not single.exists():
+                raise AgentError(
+                    f"Input image not found: {single}",
+                    kind=ErrorKind.INVALID_REQUEST,
+                )
+            input_image_path = single
 
     if output is None:
         tmp = tempfile.NamedTemporaryFile(

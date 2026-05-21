@@ -108,14 +108,13 @@ func defaultTierChains() map[string]TierConfig {
 		"low": {Chain: []string{
 			"claude:claude-haiku-4-5-20251001",
 			"gemini:gemini-2.5-flash-lite",
-			"ollama:qwen3-8b",
+			"arbiter:gemma4-26b",
 		}},
 		"free_fast": {Chain: []string{
-			"ollama:qwen3-8b",
+			"arbiter:gemma4-26b",
 		}},
 		"free_thinking": {Chain: []string{
-			"ollama:qwen3-30b-32k",
-			"ollama:deepseek-r1:14b",
+			"arbiter:gemma4-26b",
 		}},
 	}
 }
@@ -123,10 +122,11 @@ func defaultTierChains() map[string]TierConfig {
 // defaultProviders returns the built-in provider configurations.
 func defaultProviders() map[string]map[string]any {
 	return map[string]map[string]any{
-		"claude": {"permission_mode": "bypassPermissions"},
-		"codex":  {},
-		"gemini": {},
-		"ollama": {"base_url": "http://localhost:11434"},
+		"claude":  {"permission_mode": "bypassPermissions"},
+		"codex":   {},
+		"gemini":  {},
+		"ollama":  {"base_url": "http://localhost:11434"},
+		"arbiter": {"base_url": "http://10.0.0.254:8400"},
 	}
 }
 
@@ -176,6 +176,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Image.TransparentPostProcess == "" {
 		c.Image.TransparentPostProcess = "birefnet"
+	}
+	if len(c.Image.Fallback) == 0 {
+		c.Image.Fallback = []string{"spark", "nano-banana-2", "ollama"}
 	}
 
 	// TTS defaults

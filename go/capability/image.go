@@ -59,16 +59,19 @@ var nanoBananaModelInfo = agentsdk.ModelInfo{
 
 // ImageOpts holds optional parameters for GenerateImage.
 type ImageOpts struct {
-	// Provider selects the backend: "spark", "ollama", "nano-banana-2".
-	// Empty means "spark" (default).
+	// Provider selects the backend: "codex" (default), "spark", "ollama", "nano-banana-2".
+	// Empty means default (codex with fallback chain from config).
 	Provider string
 	// Model selects the image model on the backend. For spark, valid values
 	// are "z-image-turbo" and "flux-schnell". Empty means use config default
 	// or "z-image-turbo".
 	Model string
-	// Image is the input image file path for image-to-image generation.
-	// Empty means text-to-image.
+	// Image is a single input image file path for image-to-image generation.
+	// Empty means text-to-image. For multiple images, prefer Images.
 	Image string
+	// Images is a list of input image paths. Only codex honours multiple
+	// images — other providers use the first one (or Image if set).
+	Images []string
 	// Width is the requested image width in pixels.
 	Width int
 	// Height is the requested image height in pixels.
@@ -91,6 +94,28 @@ type ImageOpts struct {
 	Logger *agentsdk.ConversationLogger
 	// ConversationID ties the result to a conversation. Zero means generate one.
 	ConversationID uuid.UUID
+}
+
+// inputImages returns the unified list of input image paths from
+// ImageOpts.Image and ImageOpts.Images, in order, deduplicating.
+func (o ImageOpts) inputImages() []string {
+	var out []string
+	seen := map[string]struct{}{}
+	if o.Image != "" {
+		out = append(out, o.Image)
+		seen[o.Image] = struct{}{}
+	}
+	for _, p := range o.Images {
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
 
 // ollamaGenerateRequest is the JSON body for POST /api/generate.
@@ -370,11 +395,11 @@ func generateSpark(ctx context.Context, prompt string, opts ImageOpts, cfg *agen
 	}
 
 	jobType := "image-generate"
-	if opts.Image != "" {
+	if inputs := opts.inputImages(); len(inputs) > 0 {
 		jobType = "image-edit"
-		inputData, err := os.ReadFile(opts.Image)
+		inputData, err := os.ReadFile(inputs[0])
 		if err != nil {
-			return nil, fmt.Errorf("reading input image %s: %w", opts.Image, err)
+			return nil, fmt.Errorf("reading input image %s: %w", inputs[0], err)
 		}
 		params["image"] = base64.StdEncoding.EncodeToString(inputData)
 	}
@@ -690,10 +715,10 @@ func generateNanoBanana(ctx context.Context, prompt string, opts ImageOpts, time
 
 	// Build contents — for i2i prepend the input image as InlineData
 	var contents []*genai.Content
-	if opts.Image != "" {
-		inputData, err := os.ReadFile(opts.Image)
+	if inputs := opts.inputImages(); len(inputs) > 0 {
+		inputData, err := os.ReadFile(inputs[0])
 		if err != nil {
-			return nil, fmt.Errorf("reading input image %s: %w", opts.Image, err)
+			return nil, fmt.Errorf("reading input image %s: %w", inputs[0], err)
 		}
 		contents = []*genai.Content{
 			{
@@ -815,7 +840,9 @@ func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsd
 		primary = opts.Provider
 		chain = []string{primary}
 	} else {
-		primary = "spark"
+		// Codex is the default primary image provider. The fallback chain from
+		// config covers spark/nano-banana/ollama when codex is unavailable.
+		primary = "codex"
 		chain = buildFallbackChain(primary, cfg)
 	}
 	log.Printf("[image-sdk] GenerateImage: provider=%s chain=%v width=%d height=%d steps=%d model=%s", primary, chain, opts.Width, opts.Height, steps, opts.Model)
@@ -839,6 +866,8 @@ func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsd
 		var err error
 
 		switch provider {
+		case "codex":
+			result, err = generateCodex(ctx, prompt, opts, timeout)
 		case "spark":
 			result, err = generateSpark(ctx, prompt, opts, cfg, timeout, steps)
 		case "ollama":

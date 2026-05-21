@@ -287,8 +287,8 @@ func TestConversation_BuildChain_TierDefault(t *testing.T) {
 	if len(chain) == 0 {
 		t.Fatal("buildChain() returned empty chain for free_fast tier")
 	}
-	if chain[0] != "ollama:qwen3-8b" {
-		t.Errorf("buildChain()[0] = %q, want %q", chain[0], "ollama:qwen3-8b")
+	if chain[0] != "arbiter:gemma4-26b" {
+		t.Errorf("buildChain()[0] = %q, want %q", chain[0], "arbiter:gemma4-26b")
 	}
 }
 

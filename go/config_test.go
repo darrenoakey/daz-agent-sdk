@@ -37,8 +37,8 @@ func TestDefaultTierChains(t *testing.T) {
 		{TierHigh, 3, "claude:claude-opus-4-6"},
 		{TierMedium, 3, "claude:claude-sonnet-4-6"},
 		{TierLow, 3, "claude:claude-haiku-4-5-20251001"},
-		{TierFreeFast, 1, "ollama:qwen3-8b"},
-		{TierFreeThinking, 2, "ollama:qwen3-30b-32k"},
+		{TierFreeFast, 1, "arbiter:gemma4-26b"},
+		{TierFreeThinking, 1, "arbiter:gemma4-26b"},
 	}
 
 	for _, tt := range tests {

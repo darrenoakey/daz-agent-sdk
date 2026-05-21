@@ -51,8 +51,9 @@ type ImageCallOpts struct {
 	Output         string
 	Provider       string
 	Model          string
-	Image          string // input image path for i2i
-	Steps          int    // inference steps override (0 = derive from tier)
+	Image          string   // input image path for i2i (single)
+	Images         []string // input image paths for i2i (multiple — codex)
+	Steps          int      // inference steps override (0 = derive from tier)
 	Tier           Tier
 	Transparent    bool
 	Timeout        time.Duration
@@ -259,10 +260,11 @@ type ImageOpts struct {
 	Width       int
 	Height      int
 	Output      string
-	Provider    string // "spark", "ollama", "nano-banana-2"
-	Model       string // "z-image-turbo", "flux-schnell", etc.
-	Image       string // input image path for image-to-image
-	Steps       int    // inference steps override (0 = derive from tier)
+	Provider    string   // "codex" (default), "spark", "ollama", "nano-banana-2"
+	Model       string   // "z-image-turbo", "flux-schnell", etc.
+	Image       string   // input image path for image-to-image (single)
+	Images      []string // input image paths (multiple — codex only)
+	Steps       int      // inference steps override (0 = derive from tier)
 	Tier        Tier
 	Transparent bool
 	Timeout     time.Duration
@@ -285,6 +287,7 @@ func (a *Agent) Image(ctx context.Context, prompt string, opts ImageOpts) (*Imag
 		Provider:    opts.Provider,
 		Model:       opts.Model,
 		Image:       opts.Image,
+		Images:      opts.Images,
 		Steps:       opts.Steps,
 		Tier:        opts.Tier,
 		Transparent: opts.Transparent,

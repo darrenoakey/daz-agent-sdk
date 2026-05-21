@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,6 +49,17 @@ func main() {
 	sdk.RegisterProviderFactory("gemini", func(cfg *sdk.Config) sdk.Provider {
 		return provider.NewGeminiProvider()
 	})
+	sdk.RegisterProviderFactory("arbiter", func(cfg *sdk.Config) sdk.Provider {
+		baseURL := "http://10.0.0.254:8400"
+		if cfg != nil {
+			if p, ok := cfg.Providers["arbiter"]; ok {
+				if u, ok := p["base_url"].(string); ok && u != "" {
+					baseURL = u
+				}
+			}
+		}
+		return provider.NewArbiterProvider(baseURL)
+	})
 
 	command := os.Args[1]
 	switch command {
@@ -82,6 +94,11 @@ func newAgent() *sdk.Agent {
 			Width:          opts.Width,
 			Height:         opts.Height,
 			Output:         opts.Output,
+			Provider:       opts.Provider,
+			Model:          opts.Model,
+			Image:          opts.Image,
+			Images:         opts.Images,
+			Steps:          opts.Steps,
 			Tier:           opts.Tier,
 			Transparent:    opts.Transparent,
 			Timeout:        opts.Timeout,
@@ -107,6 +124,31 @@ func newAgent() *sdk.Agent {
 			Language:       opts.Language,
 			Timeout:        opts.Timeout,
 			ConversationID: uuid.New(),
+		})
+	}
+
+	// Wire Embed to the arbiter provider — the only provider that
+	// implements embedding. Look up the provider via the registry so
+	// caller-pinned base_urls in config propagate.
+	agent.EmbedFn = func(ctx context.Context, texts []string, opts sdk.EmbedCallOpts) (*sdk.EmbeddingResult, error) {
+		prov := sdk.GetProvider("arbiter", opts.Config)
+		if prov == nil {
+			return nil, sdk.NewAgentError(
+				"Arbiter provider is not registered for embeddings",
+				sdk.ErrorNotAvailable, nil,
+			)
+		}
+		arb, ok := prov.(*provider.ArbiterProvider)
+		if !ok {
+			return nil, sdk.NewAgentError(
+				"Embed requires the arbiter provider but the registered provider is a different type",
+				sdk.ErrorInternal, nil,
+			)
+		}
+		return arb.Embed(ctx, texts, provider.EmbedOpts{
+			Task:      opts.Task,
+			BatchSize: opts.BatchSize,
+			Timeout:   opts.Timeout,
 		})
 	}
 
@@ -142,12 +184,30 @@ func runAsk(args []string) int {
 	return 0
 }
 
+// stringSliceFlag is a flag.Value implementation that collects repeated string
+// flags into a slice. Used for --image which may be repeated to attach
+// multiple input images to a codex edit request.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ",")
+}
+func (s *stringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
 func runImage(args []string) int {
 	fs := flag.NewFlagSet("image", flag.ExitOnError)
 	prompt := fs.String("prompt", "", "The image prompt (required)")
 	width := fs.Int("width", 512, "Image width in pixels")
 	height := fs.Int("height", 512, "Image height in pixels")
 	output := fs.String("output", "", "Output file path (default: temp file)")
+	provider := fs.String("provider", "", "Image provider (default: codex). 'spark', 'ollama', 'nano-banana-2'")
+	transparent := fs.Bool("transparent", false, "Remove background after generation")
+	var images stringSliceFlag
+	fs.Var(&images, "image", "Input image file for editing/reference. Repeat to attach multiple images (codex only).")
+	fs.Var(&images, "i", "Alias for --image.")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
@@ -155,19 +215,28 @@ func runImage(args []string) int {
 
 	if *prompt == "" {
 		fmt.Fprintln(os.Stderr, "Error: --prompt is required")
-		fmt.Fprintln(os.Stderr, "Usage: agent-sdk image --prompt \"...\" --width 512 --height 512 [--output path]")
+		fmt.Fprintln(os.Stderr, "Usage: agent-sdk image --prompt \"...\" --width 512 --height 512 [--output path] [--image FILE ...] [--provider codex]")
 		return 1
 	}
 
 	agent := newAgent()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	result, err := agent.Image(ctx, *prompt, sdk.ImageOpts{
-		Width:  *width,
-		Height: *height,
-		Output: *output,
-	})
+	opts := sdk.ImageOpts{
+		Width:       *width,
+		Height:      *height,
+		Output:      *output,
+		Provider:    *provider,
+		Transparent: *transparent,
+	}
+	if len(images) == 1 {
+		opts.Image = images[0]
+	} else if len(images) > 1 {
+		opts.Images = images
+	}
+
+	result, err := agent.Image(ctx, *prompt, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
