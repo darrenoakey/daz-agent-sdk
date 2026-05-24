@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from arbiter_client import ArbiterClient, ArbiterError as _ArbiterError, stage_file as _stage_file
 from daz_agent_sdk.config import Config, get_image_steps, load_config
 from daz_agent_sdk.logging_ import ConversationLogger
 from daz_agent_sdk.types import AgentError, Capability, ErrorKind, ImageResult, ModelInfo, Tier
@@ -243,6 +242,25 @@ _SPARK_MODEL = ModelInfo(
 _ARBITER_URL = "http://10.0.0.254:8400"
 
 
+def _import_arbiter() -> Any:
+    """Lazily import arbiter_client — ONLY the spark provider needs it.
+
+    Keeping this out of module scope is deliberate: a missing or
+    mis-pointed arbiter_client editable install must never block module
+    import, otherwise the default codex provider (and every other backend)
+    goes down with it. Raises a clean NOT_AVAILABLE error if spark is
+    explicitly requested but arbiter_client isn't installed.
+    """
+    try:
+        import arbiter_client
+    except ImportError as exc:
+        raise AgentError(
+            "spark image provider requires arbiter_client — pip install -e arbiter-client",
+            kind=ErrorKind.NOT_AVAILABLE,
+        ) from exc
+    return arbiter_client
+
+
 async def _remove_background_spark(
     image_path: Path,
     *,
@@ -252,11 +270,12 @@ async def _remove_background_spark(
     url = base_url or _ARBITER_URL
 
     def _call() -> None:
-        client = ArbiterClient(base_url=url, timeout=30)
+        arbiter = _import_arbiter()
+        client = arbiter.ArbiterClient(base_url=url, timeout=30)
         image_b64 = base64.b64encode(image_path.read_bytes()).decode()
         try:
             s = client.run("background-remove", timeout=timeout, image=image_b64)
-        except _ArbiterError as e:
+        except arbiter.ArbiterError as e:
             if "Connection" in str(e) or "Unreachable" in str(e).lower():
                 raise AgentError(str(e), kind=ErrorKind.NOT_AVAILABLE) from e
             raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
@@ -304,7 +323,8 @@ async def _generate_spark(
     url = base_url or _ARBITER_URL
 
     def _call() -> None:
-        client = ArbiterClient(base_url=url, timeout=30)
+        arbiter = _import_arbiter()
+        client = arbiter.ArbiterClient(base_url=url, timeout=30)
         params: dict[str, Any] = {
             "prompt": prompt,
             "width": width,
@@ -316,21 +336,21 @@ async def _generate_spark(
             job_type = "image-edit"
             # Stage via shared mount if configured, else base64
             try:
-                params["image_file"] = _stage_file(input_image)
+                params["image_file"] = arbiter.stage_file(input_image)
             except Exception:
                 params["image"] = base64.b64encode(input_image.read_bytes()).decode()
 
         # Submit with model override in envelope (arbiter-specific field)
         try:
             job_id = client.submit_dict(job_type, params, model=model)
-        except _ArbiterError as e:
+        except arbiter.ArbiterError as e:
             if "Connection" in str(e):
                 raise AgentError(str(e), kind=ErrorKind.NOT_AVAILABLE) from e
             raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
 
         try:
             s = client.poll(job_id, interval=0.5, timeout=timeout)
-        except _ArbiterError as e:
+        except arbiter.ArbiterError as e:
             raise AgentError(str(e), kind=ErrorKind.INTERNAL) from e
 
         result = s.get("result", {})
