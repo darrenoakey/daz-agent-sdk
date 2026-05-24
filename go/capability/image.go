@@ -207,7 +207,14 @@ func sparkModelName(opts ImageOpts, cfg *agentsdk.Config) string {
 func sparkModelInfoFor(modelName string) agentsdk.ModelInfo {
 	info := sparkModelInfo
 	info.ModelID = modelName
-	info.DisplayName = "Spark " + modelName
+	switch modelName {
+	case "flux-schnell":
+		info.DisplayName = "Spark FLUX.1-schnell"
+	case "z-image-turbo":
+		info.DisplayName = "Spark Z-Image Turbo"
+	default:
+		info.DisplayName = "Spark " + modelName
+	}
 	return info
 }
 
@@ -795,8 +802,26 @@ func buildFallbackChain(primary string, cfg *agentsdk.Config) []string {
 	return chain
 }
 
+// resolveImageChain decides the primary provider and the ordered fallback
+// chain for a generation request. The default primary is "codex" (it needs
+// nothing from spark/arbiter); an explicit opts.Provider disables fallback.
+// A model without an explicit provider is an error — a model only exists on
+// one provider.
+func resolveImageChain(opts ImageOpts, cfg *agentsdk.Config) (primary string, chain []string, err error) {
+	if opts.Model != "" && opts.Provider == "" {
+		return "", nil, fmt.Errorf("model=%q specified without provider — a model requires its provider", opts.Model)
+	}
+	if opts.Provider != "" {
+		// When provider is explicit, use only that provider — no fallback chain.
+		return opts.Provider, []string{opts.Provider}, nil
+	}
+	// Codex is the default primary image provider. The fallback chain from
+	// config covers spark/nano-banana/ollama when codex is unavailable.
+	return "codex", buildFallbackChain("codex", cfg), nil
+}
+
 // GenerateImage generates an image using a provider backend with automatic
-// fallback. The provider is selected via opts.Provider (default: "spark").
+// fallback. The provider is selected via opts.Provider (default: "codex").
 // On failure, the config fallback chain is tried in order.
 func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsdk.ImageResult, error) {
 	cfg := opts.Config
@@ -828,22 +853,9 @@ func GenerateImage(ctx context.Context, prompt string, opts ImageOpts) (*agentsd
 		steps = agentsdk.GetImageSteps(tier, cfg)
 	}
 
-	// A model only exists on one provider — model without provider is an error.
-	if opts.Model != "" && opts.Provider == "" {
-		return nil, fmt.Errorf("model=%q specified without provider — a model requires its provider", opts.Model)
-	}
-
-	// When provider is explicit, use only that provider — no fallback chain.
-	var chain []string
-	var primary string
-	if opts.Provider != "" {
-		primary = opts.Provider
-		chain = []string{primary}
-	} else {
-		// Codex is the default primary image provider. The fallback chain from
-		// config covers spark/nano-banana/ollama when codex is unavailable.
-		primary = "codex"
-		chain = buildFallbackChain(primary, cfg)
+	primary, chain, err := resolveImageChain(opts, cfg)
+	if err != nil {
+		return nil, err
 	}
 	log.Printf("[image-sdk] GenerateImage: provider=%s chain=%v width=%d height=%d steps=%d model=%s", primary, chain, opts.Width, opts.Height, steps, opts.Model)
 

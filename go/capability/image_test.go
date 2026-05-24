@@ -681,6 +681,12 @@ func TestGenerateImage_OllamaNotRunning(t *testing.T) {
 // ── Fallback chain ─────────────────────────────────────────────────────────
 
 func TestGenerateImage_FallbackChain_UsesSecondOnFirstFailure(t *testing.T) {
+	// Hide codex from PATH so the default primary fails fast (NOT_AVAILABLE),
+	// then spark (500) fails, exercising fallback all the way to ollama.
+	// An explicit Provider would disable fallback, so this uses the default
+	// codex chain (codex -> config fallbacks).
+	t.Setenv("PATH", t.TempDir())
+
 	pngData := createTestPNG()
 	b64Image := base64.StdEncoding.EncodeToString(pngData)
 
@@ -702,7 +708,7 @@ func TestGenerateImage_FallbackChain_UsesSecondOnFirstFailure(t *testing.T) {
 		Image: agentsdk.ImageConfig{
 			Model:    "z-image-turbo",
 			Tiers:    map[string]agentsdk.ImageTierConfig{"high": {Steps: 3}},
-			Fallback: []string{"ollama"},
+			Fallback: []string{"spark", "ollama"},
 		},
 		Providers: map[string]map[string]any{
 			"arbiter": {"base_url": arbiterServer.URL},
@@ -710,10 +716,10 @@ func TestGenerateImage_FallbackChain_UsesSecondOnFirstFailure(t *testing.T) {
 		},
 	}
 
+	// No explicit Provider — default chain is codex -> spark -> ollama.
 	result, err := GenerateImage(context.Background(), "test fallback", ImageOpts{
-		Provider: "spark",
-		Config:   cfg,
-		Timeout:  5 * time.Second,
+		Config:  cfg,
+		Timeout: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got: %v", err)
@@ -783,7 +789,47 @@ func TestGenerateImage_UnknownProvider(t *testing.T) {
 
 // ── Default provider ───────────────────────────────────────────────────────
 
-func TestGenerateImage_DefaultProviderIsSpark(t *testing.T) {
+// Codex is the default image provider: it needs nothing from spark/arbiter, so
+// it must be the primary even when spark config is present. Asserted via the
+// chain resolver to stay hermetic (the codex backend shells out to the CLI).
+func TestResolveImageChain_DefaultsToCodex(t *testing.T) {
+	cfg := sparkCfg("http://unused.invalid")
+
+	primary, chain, err := resolveImageChain(ImageOpts{}, cfg)
+	if err != nil {
+		t.Fatalf("resolveImageChain failed: %v", err)
+	}
+	if primary != "codex" {
+		t.Errorf("expected default primary codex, got %s", primary)
+	}
+	if len(chain) == 0 || chain[0] != "codex" {
+		t.Errorf("expected chain to start with codex, got %v", chain)
+	}
+}
+
+// An explicit provider disables fallback — the chain is exactly that provider.
+func TestResolveImageChain_ExplicitProviderNoFallback(t *testing.T) {
+	cfg := &agentsdk.Config{Image: agentsdk.ImageConfig{Fallback: []string{"spark", "mflux"}}}
+
+	primary, chain, err := resolveImageChain(ImageOpts{Provider: "spark"}, cfg)
+	if err != nil {
+		t.Fatalf("resolveImageChain failed: %v", err)
+	}
+	if primary != "spark" || len(chain) != 1 || chain[0] != "spark" {
+		t.Errorf("explicit provider should yield single-element chain [spark], got primary=%s chain=%v", primary, chain)
+	}
+}
+
+// A model without an explicit provider is an error.
+func TestResolveImageChain_ModelWithoutProviderErrors(t *testing.T) {
+	_, _, err := resolveImageChain(ImageOpts{Model: "z-image-turbo"}, &agentsdk.Config{})
+	if err == nil {
+		t.Fatal("expected error for model without provider")
+	}
+}
+
+// End-to-end spark HTTP path, exercised via an explicit provider request.
+func TestGenerateImage_ExplicitSparkProvider(t *testing.T) {
 	pngData := createTestPNG()
 	b64Image := base64.StdEncoding.EncodeToString(pngData)
 
@@ -806,16 +852,16 @@ func TestGenerateImage_DefaultProviderIsSpark(t *testing.T) {
 
 	cfg := sparkCfg(sparkServer.URL)
 
-	// Provider is empty — should default to spark
-	result, err := GenerateImage(context.Background(), "default provider test", ImageOpts{
-		Config:  cfg,
-		Timeout: 5 * time.Second,
+	result, err := GenerateImage(context.Background(), "explicit spark test", ImageOpts{
+		Provider: "spark",
+		Config:   cfg,
+		Timeout:  5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("GenerateImage failed: %v", err)
 	}
 	if result.ModelUsed.Provider != "spark" {
-		t.Errorf("expected spark provider by default, got %s", result.ModelUsed.Provider)
+		t.Errorf("expected spark provider, got %s", result.ModelUsed.Provider)
 	}
 }
 

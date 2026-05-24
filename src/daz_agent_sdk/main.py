@@ -94,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Input image file for editing/reference. Repeat to attach multiple images (codex only).",
     )
     img_p.add_argument("--transparent", action="store_true", help="Remove background")
-    img_p.add_argument("--provider", default=None, help="Image provider (default: spark, or 'mflux', 'nano-banana-2')")
+    img_p.add_argument("--provider", default=None, help="Image provider (default: codex; or 'spark', 'mflux', 'nano-banana-2')")
 
     # models
     models_p = sub.add_parser("models", help="List available models")
