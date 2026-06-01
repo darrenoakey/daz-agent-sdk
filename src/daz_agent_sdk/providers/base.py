@@ -45,6 +45,7 @@ class Provider(ABC):
         cwd: str | Path | None = None,
         max_turns: int = 1,
         timeout: float = 300.0,
+        setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse: ...
 
     # ##################################################################

@@ -152,6 +152,7 @@ class ClaudeProvider:
         max_turns: int = 1,
         timeout: float = 300.0,
         mcp_servers: dict[str, Any] | None = None,
+        setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:
         prompt = _build_prompt(messages)
         output_format: dict[str, Any] | None = None
@@ -166,7 +167,7 @@ class ClaudeProvider:
             effective_max_turns = max(max_turns, 2)
         options = _build_options(
             _sdk, model, tools, cwd, effective_max_turns, self._permission_mode,
-            mcp_servers, output_format,
+            mcp_servers, output_format, setting_sources,
         )
 
         saved = _strip_claudecode()
@@ -293,6 +294,7 @@ def _build_options(
     permission_mode: str,
     mcp_servers: dict[str, Any] | None = None,
     output_format: dict[str, Any] | None = None,
+    setting_sources: list[str] | tuple[str, ...] | None = None,
 ) -> Any:
     kwargs: dict[str, Any] = {
         "permission_mode": permission_mode,
@@ -308,6 +310,12 @@ def _build_options(
         kwargs["mcp_servers"] = mcp_servers
     if output_format is not None:
         kwargs["output_format"] = output_format
+    # setting_sources controls which on-disk Claude settings/plugins/MCP the CLI loads.
+    # An empty list/tuple means "load nothing global" (a lean, fast session); a populated
+    # list (e.g. ["user","project","local"]) restores the full global environment. When
+    # None we leave it unset and inherit the SDK default.
+    if setting_sources is not None:
+        kwargs["setting_sources"] = list(setting_sources)
     return sdk.ClaudeAgentOptions(**kwargs)
 
 

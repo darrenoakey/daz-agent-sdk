@@ -60,7 +60,15 @@ class Agent:
         max_turns: int = 1,
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
+        setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:
+        # setting_sources restricts which on-disk config trees the spawned Claude CLI
+        # loads (global ~/.claude plugins/skills/MCP vs project/local). An empty
+        # collection means "load nothing global" — a lean environment. None keeps the
+        # provider default. Only forwarded to providers that understand it (claude).
+        complete_extra: dict[str, Any] = {}
+        if setting_sources is not None:
+            complete_extra["setting_sources"] = list(setting_sources)
         messages: list[Message] = []
         if system is not None:
             messages.append(Message(role="system", content=system))
@@ -87,6 +95,7 @@ class Agent:
                 tools=tools,
                 cwd=cwd,
                 max_turns=max_turns,
+                **complete_extra,
             )
 
         chain = get_tier_chain(tier, self._config)
@@ -118,6 +127,7 @@ class Agent:
                 tools=tools,
                 cwd=cwd,
                 max_turns=max_turns,
+                **complete_extra,
             )
 
         return await execute_with_fallback(

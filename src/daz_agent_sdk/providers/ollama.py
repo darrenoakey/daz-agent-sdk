@@ -153,6 +153,7 @@ class OllamaProvider(Provider):
         cwd: str | Path | None = None,
         max_turns: int = 1,
         timeout: float = 300.0,
+        setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:
         conversation_id = uuid4()
         turn_id = uuid4()
