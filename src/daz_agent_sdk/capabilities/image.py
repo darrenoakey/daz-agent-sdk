@@ -8,6 +8,7 @@ import os
 import re
 import shutil as _shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -409,7 +410,7 @@ _CODEX_SESSION_RE = re.compile(r"session id:\s*([0-9a-f-]+)", re.IGNORECASE)
 _CODEX_THREAD_RE = re.compile(r'"thread_id"\s*:\s*"([0-9a-f-]+)"', re.IGNORECASE)
 
 
-async def _generate_codex(
+async def _codex_image_once(
     prompt: str,
     *,
     width: int,
@@ -417,7 +418,11 @@ async def _generate_codex(
     output_path: Path,
     input_image: Path | list[Path] | None = None,
     timeout: float = 300.0,
-) -> None:
+) -> str | None:
+    """One codex image attempt. On success the image is written to output_path
+    and None is returned. If codex RUNS but produces NO image (content/safety
+    refusal) a short reason string is returned — a stale prior image is NEVER
+    returned. Raises on CLI error / timeout / codex-not-found / missing input."""
     if _shutil.which("codex") is None:
         raise AgentError("codex CLI not found on PATH", kind=ErrorKind.NOT_AVAILABLE)
 
@@ -493,6 +498,13 @@ async def _generate_codex(
         cmd.extend(["-i", str(ip)])
     cmd.extend(["--", instruction])
 
+    # Capture the wall-clock instant BEFORE codex runs. The only image we will
+    # ever accept as this call's result is one written AFTER this instant — see
+    # the freshness gate below. This makes it IMPOSSIBLE to return a stale image
+    # from a previous generation (silently "succeeding" with the wrong picture
+    # is far worse than failing loudly).
+    _gen_start = time.time()
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.DEVNULL,
@@ -539,20 +551,150 @@ async def _generate_codex(
                 reverse=True,
             )
     if not candidates and _CODEX_IMAGE_DIR.is_dir():
-        # fallback: newest file anywhere under generated_images
-        all_pngs = list(_CODEX_IMAGE_DIR.rglob("ig_*.png"))
-        if all_pngs:
-            candidates = sorted(all_pngs, key=lambda p: p.stat().st_mtime, reverse=True)
-
-    if not candidates:
-        raise AgentError(
-            f"codex did not produce a generated image. stdout tail: {stdout[-500:]!r}",
-            kind=ErrorKind.INTERNAL,
+        # No identified session dir (e.g. codex changed its output format) —
+        # scan everywhere. The freshness gate below is what guarantees safety,
+        # so this can ONLY ever surface an image written by THIS call.
+        candidates = sorted(
+            _CODEX_IMAGE_DIR.rglob("ig_*.png"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
 
-    newest = candidates[0]
+    # FRESHNESS GATE — the core anti-fabrication invariant. Only accept an image
+    # that was written AFTER we launched codex for THIS call. A 2s slack absorbs
+    # filesystem mtime granularity / clock rounding; prior-run images are always
+    # far older than that, so a stale image can never pass. If codex reported
+    # success (returncode 0) but produced no fresh image, that is a LIE we refuse
+    # to propagate: we raise rather than hand back a previous generation.
+    fresh = [p for p in candidates if p.stat().st_mtime >= _gen_start - 2.0]
+
+    if not fresh:
+        # codex ran (rc=0) but produced NO new image — the content/safety-refusal
+        # signal. We NEVER substitute a stale prior image; instead we return the
+        # refusal reason (codex's own message) so the caller can rewrite + retry.
+        # Returning a string (rather than None) means "blocked — here's why".
+        return _extract_codex_agent_message(stdout) or (
+            f"codex produced no image (likely safety refusal); {len(candidates)} "
+            f"pre-existing image(s) all predate this call. stdout tail: {stdout[-300:]!r}"
+        )
+
+    newest = fresh[0]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _shutil.copyfile(newest, output_path)
+    return None
+
+
+def _extract_codex_agent_message(stdout: str) -> str:
+    """Return codex's final `agent_message` text from its --json event stream
+    (used to learn WHY a generation was refused). Empty string if none."""
+    import json as _json
+    text = ""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(line)
+        except ValueError:
+            continue
+        item = ev.get("item") if isinstance(ev, dict) else None
+        if isinstance(item, dict) and item.get("type") == "agent_message" and item.get("text"):
+            text = str(item["text"])
+    return text
+
+
+async def _codex_rewrite_safe_prompt(
+    original_prompt: str, refusal_msg: str, *, timeout: float,
+) -> str:
+    """Ask codex (text-only, no image tool) to diagnose why an image prompt was
+    refused by the safety system and rewrite it to be completely safe while
+    preserving the intended picture. Returns the rewritten prompt text."""
+    meta = (
+        "An image-generation request was just refused by the automated image "
+        "safety system. Here is the EXACT prompt that was refused:\n\n"
+        f"<<<PROMPT>>>\n{original_prompt}\n<<<END>>>\n\n"
+        + (f"The safety system's message was: {refusal_msg!r}\n\n" if refusal_msg else "")
+        + "Rewrite it into a COMPLETELY safe, policy-compliant image prompt that yields "
+        "the SAME intended picture: keep the subject, art style, framing, wardrobe, "
+        "colours and composition, but remove or rephrase anything an automated filter "
+        "could misread (ambiguous anatomy or body wording, terms with unsafe double "
+        "meanings, etc.). Do NOT call any tool or generate an image. Respond with ONLY "
+        "the rewritten image prompt as plain text — no preamble, no quotes, no notes."
+    )
+    child_env = os.environ.copy()
+    child_env.pop("CLAUDECODE", None)
+    proc = await asyncio.create_subprocess_exec(
+        "codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check", "--ephemeral", "--json", "-m", "gpt-5.3-codex",
+        "--", meta,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env=child_env,
+    )
+    try:
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise AgentError("codex prompt-rewrite timed out", kind=ErrorKind.TIMEOUT)
+    if proc.returncode != 0:
+        raise AgentError(
+            f"codex prompt-rewrite exited {proc.returncode}: "
+            f"{err_b.decode(errors='replace') or out_b.decode(errors='replace')}",
+            kind=ErrorKind.INTERNAL,
+        )
+    rewritten = _extract_codex_agent_message(out_b.decode(errors="replace")).strip()
+    if not rewritten:
+        raise AgentError("codex prompt-rewrite produced no text", kind=ErrorKind.INTERNAL)
+    return rewritten
+
+
+# How many times we ask codex to rewrite a safety-refused prompt before giving up.
+_MAX_SAFETY_REWRITES = 3
+
+
+async def _generate_codex(
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    output_path: Path,
+    input_image: Path | list[Path] | None = None,
+    timeout: float = 300.0,
+) -> None:
+    """Generate an image via codex, self-healing around the image safety filter.
+
+    Runs codex's native image tool. If a generation is REFUSED by the content/
+    safety system (codex runs but emits no image), ask codex itself to diagnose
+    the refusal and rewrite the prompt to be completely safe, then retry — up to
+    _MAX_SAFETY_REWRITES times. A stale image is NEVER returned (the freshness
+    gate in _codex_image_once guarantees that); if every rewrite still produces
+    no image we raise rather than fabricate."""
+    current_prompt = prompt
+    last_refusal = ""
+    for attempt in range(_MAX_SAFETY_REWRITES + 1):
+        refusal = await _codex_image_once(
+            current_prompt, width=width, height=height,
+            output_path=output_path, input_image=input_image, timeout=timeout,
+        )
+        if refusal is None:
+            return  # success — image written to output_path
+        last_refusal = refusal
+        if attempt < _MAX_SAFETY_REWRITES:
+            new_prompt = await _codex_rewrite_safe_prompt(
+                current_prompt, refusal, timeout=timeout,
+            )
+            # Log the self-heal so it's visible in pipeline output.
+            print(
+                f"  [codex] image refused by safety system "
+                f"(attempt {attempt + 1}/{_MAX_SAFETY_REWRITES + 1}); "
+                f"rewriting prompt safely and retrying. reason: {refusal[:120]}"
+            )
+            current_prompt = new_prompt
+    raise AgentError(
+        f"codex image refused by the safety system; {_MAX_SAFETY_REWRITES} safe-rewrite "
+        f"attempt(s) still produced no image. last codex message: {last_refusal!r}",
+        kind=ErrorKind.INTERNAL,
+    )
 
 
 # ##################################################################

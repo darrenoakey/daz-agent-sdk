@@ -131,6 +131,13 @@ func generateCodex(ctx context.Context, prompt string, opts ImageOpts, timeout t
 	cmd.Env = out
 	cmd.Stdin = nil
 
+	// Wall-clock instant BEFORE codex runs. The only image we accept as this
+	// call's result is one written after this instant (see the freshness gate
+	// in findCodexImages). This makes returning a stale image from a previous
+	// generation impossible — silently succeeding with the wrong picture is
+	// worse than failing loudly. 2s slack absorbs mtime/clock granularity.
+	genStart := time.Now().Add(-2 * time.Second)
+
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("codex stdout pipe: %w", err)
@@ -185,11 +192,14 @@ func generateCodex(ctx context.Context, prompt string, opts ImageOpts, timeout t
 		)
 	}
 
-	// Recover the generated file.
-	candidates := findCodexImages(threadID)
+	// Recover the generated file — ONLY images written after genStart (i.e. by
+	// THIS call). A stale image from a previous generation can never qualify.
+	candidates := findCodexImages(threadID, genStart)
 	if len(candidates) == 0 {
 		return nil, agentsdk.NewAgentError(
-			fmt.Sprintf("codex did not produce a generated image. stdout tail: %s", tail(stdoutBuf.String(), 500)),
+			fmt.Sprintf("codex reported success but produced NO new image for this call "+
+				"(refusing to return a stale image from a previous generation). stdout tail: %s",
+				tail(stdoutBuf.String(), 500)),
 			agentsdk.ErrorInternal, nil,
 		)
 	}
@@ -208,10 +218,12 @@ func generateCodex(ctx context.Context, prompt string, opts ImageOpts, timeout t
 	}, nil
 }
 
-// findCodexImages returns generated codex images sorted newest-first. When
-// threadID is set, it scans that session's folder; otherwise it falls back to
-// every session folder.
-func findCodexImages(threadID string) []string {
+// findCodexImages returns generated codex images sorted newest-first, RESTRICTED
+// to those modified at/after `since` (so only images produced by the current
+// call qualify — never a stale one from a prior generation). When threadID is
+// set, it scans that session's folder; otherwise it falls back to every session
+// folder, but the `since` gate still guarantees freshness.
+func findCodexImages(threadID string, since time.Time) []string {
 	root := codexImageDir()
 	dirs := []string{}
 	if threadID != "" {
@@ -244,6 +256,10 @@ func findCodexImages(threadID string) []string {
 			}
 			info, err := e.Info()
 			if err != nil {
+				continue
+			}
+			// Freshness gate: drop any image written before this call started.
+			if info.ModTime().Before(since) {
 				continue
 			}
 			files = append(files, fileInfo{path: filepath.Join(d, name), modTime: info.ModTime()})
