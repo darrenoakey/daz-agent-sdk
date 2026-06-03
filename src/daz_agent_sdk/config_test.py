@@ -82,6 +82,18 @@ def test_default_image_model(tmp_path: Path) -> None:
     assert cfg.image.model == "z-image-turbo"
 
 
+def test_default_codex_model(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "absent.yaml")
+    assert cfg.image.codex_model == "gpt-5.3-codex"
+
+
+def test_codex_model_override(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("image:\n  codex_model: gpt-5.5\n", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.image.codex_model == "gpt-5.5"
+
+
 def test_default_image_steps_very_high(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
     assert cfg.image.tiers["very_high"].steps == 8

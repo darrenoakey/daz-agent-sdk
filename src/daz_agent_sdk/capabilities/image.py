@@ -418,6 +418,7 @@ async def _codex_image_once(
     output_path: Path,
     input_image: Path | list[Path] | None = None,
     timeout: float = 300.0,
+    model: str = "gpt-5.3-codex",
 ) -> str | None:
     """One codex image attempt. On success the image is written to output_path
     and None is returned. If codex RUNS but produces NO image (content/safety
@@ -492,7 +493,7 @@ async def _codex_image_once(
         "--skip-git-repo-check",
         "--ephemeral",
         "--json",
-        "-m", "gpt-5.3-codex",
+        "-m", model,
     ]
     for ip in input_images:
         cmd.extend(["-i", str(ip)])
@@ -660,6 +661,7 @@ async def _generate_codex(
     output_path: Path,
     input_image: Path | list[Path] | None = None,
     timeout: float = 300.0,
+    model: str = "gpt-5.3-codex",
 ) -> None:
     """Generate an image via codex, self-healing around the image safety filter.
 
@@ -675,6 +677,7 @@ async def _generate_codex(
         refusal = await _codex_image_once(
             current_prompt, width=width, height=height,
             output_path=output_path, input_image=input_image, timeout=timeout,
+            model=model,
         )
         if refusal is None:
             return  # success — image written to output_path
@@ -795,6 +798,7 @@ async def _generate_one(
             output_path=output_path,
             input_image=input_image,
             timeout=timeout,
+            model=cfg.image.codex_model,
         )
         if transparent:
             await _remove_background(output_path, timeout=timeout)
