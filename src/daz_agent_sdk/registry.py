@@ -12,6 +12,7 @@ from daz_agent_sdk.types import Capability, ModelInfo, Tier
 _PROVIDER_MODULES: dict[str, str] = {
     "claude": "daz_agent_sdk.providers.claude",
     "ollama": "daz_agent_sdk.providers.ollama",
+    "boringstack": "daz_agent_sdk.providers.boringstack",
     "gemini": "daz_agent_sdk.providers.gemini",
     "codex": "daz_agent_sdk.providers.codex",
     "arbiter": "daz_agent_sdk.providers.arbiter",
