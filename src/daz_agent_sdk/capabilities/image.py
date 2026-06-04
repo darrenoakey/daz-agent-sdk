@@ -493,7 +493,9 @@ async def _codex_image_once(
         "--skip-git-repo-check",
         "--ephemeral",
         "--json",
-        "-m", model,
+        # No -m: use codex's default model. A pinned model (e.g. gpt-5.3-codex)
+        # can become unsupported for the active account when codex updates;
+        # the account's default always works.
     ]
     for ip in input_images:
         cmd.extend(["-i", str(ip)])
@@ -626,7 +628,7 @@ async def _codex_rewrite_safe_prompt(
     child_env.pop("CLAUDECODE", None)
     proc = await asyncio.create_subprocess_exec(
         "codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
-        "--skip-git-repo-check", "--ephemeral", "--json", "-m", "gpt-5.3-codex",
+        "--skip-git-repo-check", "--ephemeral", "--json",
         "--", meta,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
