@@ -800,7 +800,8 @@ async def _generate_one(
             output_path=output_path,
             input_image=input_image,
             timeout=timeout,
-            model=cfg.image.codex_model,
+            # No model override — codex uses its config.toml default model
+            # (a pinned model can become unsupported for the account).
         )
         if transparent:
             await _remove_background(output_path, timeout=timeout)
