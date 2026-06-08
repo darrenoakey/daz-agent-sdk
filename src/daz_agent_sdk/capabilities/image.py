@@ -5,10 +5,8 @@ import base64
 import fcntl
 import gc
 import os
-import re
 import shutil as _shutil
 import tempfile
-import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -404,10 +402,9 @@ _CODEX_MODEL = ModelInfo(
     supports_conversation=False,
 )
 
-_CODEX_IMAGE_DIR = Path.home() / ".codex" / "generated_images"
-_CODEX_SESSION_RE = re.compile(r"session id:\s*([0-9a-f-]+)", re.IGNORECASE)
-# JSONL emits {"type":"thread.started","thread_id":"<uuid>"} as the very first event
-_CODEX_THREAD_RE = re.compile(r'"thread_id"\s*:\s*"([0-9a-f-]+)"', re.IGNORECASE)
+# NOTE: codex image output is now isolated per-call via a private CODEX_HOME
+# (see _generate_codex). No shared ~/.codex/generated_images pool scan, and no
+# session-id parsing — so the old _CODEX_IMAGE_DIR / session regexes are gone.
 
 
 async def _codex_image_once(
@@ -501,125 +498,88 @@ async def _codex_image_once(
         cmd.extend(["-i", str(ip)])
     cmd.extend(["--", instruction])
 
-    # Capture the wall-clock instant BEFORE codex runs. The only image we will
-    # ever accept as this call's result is one written AFTER this instant — see
-    # the freshness gate below. This makes it IMPOSSIBLE to return a stale image
-    # from a previous generation (silently "succeeding" with the wrong picture
-    # is far worse than failing loudly).
-    _gen_start = time.time()
+    # ── Per-call isolated CODEX_HOME — the contamination-proof identity ──────
+    # Codex writes generated images to $CODEX_HOME/generated_images/<thread>/
+    # ig_*.png. The OLD approach read from the SHARED ~/.codex pool and guessed
+    # which file was "ours" by session id / newest-fresh-mtime. That is a racy
+    # heuristic: when another codex job writes concurrently — or finishes out of
+    # order — the wrong image gets copied in (digest-render frames leaked into a
+    # music video at boundaries 5/9/13, 2026-06-08). Instead, give THIS call its
+    # own private CODEX_HOME so its images land in a directory nothing else can
+    # write to. Identification becomes physical, not heuristic — immune to
+    # concurrency and ordering. Auth/config are symlinked in so codex still
+    # authenticates as the real user; codex honours CODEX_HOME for image output
+    # (verified 2026-06-08, codex-cli 0.125.0).
+    _real_codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    _call_codex_home = Path(tempfile.mkdtemp(prefix="codex-img-"))
+    for _f in ("auth.json", "config.toml"):
+        _src = _real_codex_home / _f
+        if _src.exists():
+            try:
+                os.symlink(_src, _call_codex_home / _f)
+            except OSError:
+                _shutil.copy2(_src, _call_codex_home / _f)
+    child_env["CODEX_HOME"] = str(_call_codex_home)
+    _call_image_dir = _call_codex_home / "generated_images"
 
-    # Snapshot the codex session dirs that already exist. If codex's output
-    # doesn't reveal THIS call's session id, we identify our session as the dir
-    # created during this call — never by scanning the shared pool for the
-    # "newest" image, which under concurrency can hand back another codex job's
-    # frame (cross-contamination: digest-render frames leaked into a music video
-    # at boundaries 9 & 13, 2026-06-08).
     try:
-        _pre_session_dirs = {
-            p.name for p in _CODEX_IMAGE_DIR.iterdir() if p.is_dir()
-        }
-    except OSError:
-        _pre_session_dirs = set()
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=child_env,
-    )
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=timeout,
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=child_env,
         )
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise AgentError(
-            f"codex image generation timed out after {timeout}s",
-            kind=ErrorKind.TIMEOUT,
-        )
-
-    stdout = stdout_bytes.decode(errors="replace")
-    stderr = stderr_bytes.decode(errors="replace")
-
-    if proc.returncode != 0:
-        raise AgentError(
-            f"codex exited with code {proc.returncode}: {stderr or stdout}",
-            kind=ErrorKind.INTERNAL,
-        )
-
-    # locate the generated file — with --json, codex emits a thread.started
-    # event with the session id as the first JSON line on stdout. Fall back to
-    # the older "session id:" prose on stderr for compatibility.
-    match = (
-        _CODEX_THREAD_RE.search(stdout)
-        or _CODEX_SESSION_RE.search(stderr)
-        or _CODEX_SESSION_RE.search(stdout)
-    )
-    # Resolve THIS call's session dir — the only place we will read an image
-    # from. We NEVER scan the shared _CODEX_IMAGE_DIR pool for the globally
-    # newest image: that is not job-isolated, so a concurrent codex job (e.g. a
-    # second video render) writing a frame in the same window could be copied in
-    # as our result. Isolation is by session dir, identified two ways:
-    #   1. the session/thread id parsed from codex's own output (primary), or
-    #   2. a session dir that did NOT exist before this call and was written
-    #      during it (fallback) — only if exactly one such dir exists.
-    session_dir: Path | None = None
-    if match:
-        cand = _CODEX_IMAGE_DIR / match.group(1)
-        if cand.is_dir():
-            session_dir = cand
-    if session_dir is None and _CODEX_IMAGE_DIR.is_dir():
         try:
-            new_dirs = [
-                p for p in _CODEX_IMAGE_DIR.iterdir()
-                if p.is_dir()
-                and p.name not in _pre_session_dirs
-                and p.stat().st_mtime >= _gen_start - 2.0
-            ]
-        except OSError:
-            new_dirs = []
-        if len(new_dirs) == 1:
-            session_dir = new_dirs[0]
-        elif len(new_dirs) > 1:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
             raise AgentError(
-                "codex image: cannot identify this call's session "
-                f"({len(new_dirs)} new session dirs appeared concurrently) — "
-                "refusing to guess from the shared pool (cross-contamination risk).",
+                f"codex image generation timed out after {timeout}s",
+                kind=ErrorKind.TIMEOUT,
+            )
+
+        stdout = stdout_bytes.decode(errors="replace")
+        stderr = stderr_bytes.decode(errors="replace")
+
+        if proc.returncode != 0:
+            raise AgentError(
+                f"codex exited with code {proc.returncode}: {stderr or stdout}",
                 kind=ErrorKind.INTERNAL,
             )
 
-    candidates: list[Path] = []
-    if session_dir is not None:
-        candidates = sorted(
-            session_dir.glob("ig_*.png"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
+        # The result is THE image in our private generated_images dir. Nothing
+        # else writes here, so there is no ambiguity, no session parsing, and
+        # cross-contamination is structurally impossible regardless of
+        # concurrency or completion order.
+        candidates = (
+            sorted(
+                _call_image_dir.rglob("ig_*.png"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if _call_image_dir.is_dir()
+            else []
         )
 
-    # FRESHNESS GATE — the core anti-fabrication invariant. Only accept an image
-    # that was written AFTER we launched codex for THIS call. A 2s slack absorbs
-    # filesystem mtime granularity / clock rounding; prior-run images are always
-    # far older than that, so a stale image can never pass. If codex reported
-    # success (returncode 0) but produced no fresh image, that is a LIE we refuse
-    # to propagate: we raise rather than hand back a previous generation.
-    fresh = [p for p in candidates if p.stat().st_mtime >= _gen_start - 2.0]
+        if not candidates:
+            # codex ran (rc=0) but produced NO image in our private dir — the
+            # content/safety-refusal signal. Return codex's own message so the
+            # caller can rewrite + retry. A string (not None) means "blocked".
+            return _extract_codex_agent_message(stdout) or (
+                "codex produced no image (likely safety refusal). "
+                f"stdout tail: {stdout[-300:]!r}"
+            )
 
-    if not fresh:
-        # codex ran (rc=0) but produced NO new image — the content/safety-refusal
-        # signal. We NEVER substitute a stale prior image; instead we return the
-        # refusal reason (codex's own message) so the caller can rewrite + retry.
-        # Returning a string (rather than None) means "blocked — here's why".
-        return _extract_codex_agent_message(stdout) or (
-            f"codex produced no image (likely safety refusal); {len(candidates)} "
-            f"pre-existing image(s) all predate this call. stdout tail: {stdout[-300:]!r}"
-        )
-
-    newest = fresh[0]
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    _shutil.copyfile(newest, output_path)
-    return None
+        newest = candidates[0]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        _shutil.copyfile(newest, output_path)
+        return None
+    finally:
+        _shutil.rmtree(_call_codex_home, ignore_errors=True)
 
 
 def _extract_codex_agent_message(stdout: str) -> str:
