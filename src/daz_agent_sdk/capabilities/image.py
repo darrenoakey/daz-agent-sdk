@@ -508,6 +508,19 @@ async def _codex_image_once(
     # is far worse than failing loudly).
     _gen_start = time.time()
 
+    # Snapshot the codex session dirs that already exist. If codex's output
+    # doesn't reveal THIS call's session id, we identify our session as the dir
+    # created during this call — never by scanning the shared pool for the
+    # "newest" image, which under concurrency can hand back another codex job's
+    # frame (cross-contamination: digest-render frames leaked into a music video
+    # at boundaries 9 & 13, 2026-06-08).
+    try:
+        _pre_session_dirs = {
+            p.name for p in _CODEX_IMAGE_DIR.iterdir() if p.is_dir()
+        }
+    except OSError:
+        _pre_session_dirs = set()
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.DEVNULL,
@@ -544,21 +557,43 @@ async def _codex_image_once(
         or _CODEX_SESSION_RE.search(stderr)
         or _CODEX_SESSION_RE.search(stdout)
     )
-    candidates: list[Path] = []
+    # Resolve THIS call's session dir — the only place we will read an image
+    # from. We NEVER scan the shared _CODEX_IMAGE_DIR pool for the globally
+    # newest image: that is not job-isolated, so a concurrent codex job (e.g. a
+    # second video render) writing a frame in the same window could be copied in
+    # as our result. Isolation is by session dir, identified two ways:
+    #   1. the session/thread id parsed from codex's own output (primary), or
+    #   2. a session dir that did NOT exist before this call and was written
+    #      during it (fallback) — only if exactly one such dir exists.
+    session_dir: Path | None = None
     if match:
-        session_dir = _CODEX_IMAGE_DIR / match.group(1)
-        if session_dir.is_dir():
-            candidates = sorted(
-                session_dir.glob("ig_*.png"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
+        cand = _CODEX_IMAGE_DIR / match.group(1)
+        if cand.is_dir():
+            session_dir = cand
+    if session_dir is None and _CODEX_IMAGE_DIR.is_dir():
+        try:
+            new_dirs = [
+                p for p in _CODEX_IMAGE_DIR.iterdir()
+                if p.is_dir()
+                and p.name not in _pre_session_dirs
+                and p.stat().st_mtime >= _gen_start - 2.0
+            ]
+        except OSError:
+            new_dirs = []
+        if len(new_dirs) == 1:
+            session_dir = new_dirs[0]
+        elif len(new_dirs) > 1:
+            raise AgentError(
+                "codex image: cannot identify this call's session "
+                f"({len(new_dirs)} new session dirs appeared concurrently) — "
+                "refusing to guess from the shared pool (cross-contamination risk).",
+                kind=ErrorKind.INTERNAL,
             )
-    if not candidates and _CODEX_IMAGE_DIR.is_dir():
-        # No identified session dir (e.g. codex changed its output format) —
-        # scan everywhere. The freshness gate below is what guarantees safety,
-        # so this can ONLY ever surface an image written by THIS call.
+
+    candidates: list[Path] = []
+    if session_dir is not None:
         candidates = sorted(
-            _CODEX_IMAGE_DIR.rglob("ig_*.png"),
+            session_dir.glob("ig_*.png"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
