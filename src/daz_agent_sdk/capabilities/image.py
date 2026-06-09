@@ -319,6 +319,22 @@ async def _generate_spark(
     base_url: str | None = None,
     model: str = "z-image-turbo",
 ) -> None:
+    # =====================================================================
+    # FLUX IS BANNED FOR IMAGE GENERATION — HARD GUARD.
+    # This function is the flux / z-image image-gen path on the spark GPU box.
+    # Per explicit, non-negotiable instruction, image generation must NEVER
+    # fall back to (or use) flux. generate_image() already strips "spark" from
+    # every provider chain; this is the second line of defence so that even a
+    # direct call to _generate_spark() for image generation fails loudly
+    # instead of silently producing a flux frame.
+    # (Background removal uses _remove_background_spark, a separate function,
+    # and is unaffected.)
+    # =====================================================================
+    raise AgentError(
+        "flux/spark image generation is permanently disabled — never fall back "
+        "to flux. Use codex (or another non-flux provider).",
+        kind=ErrorKind.INVALID_REQUEST,
+    )
     url = base_url or _ARBITER_URL
 
     def _call() -> None:
@@ -1011,6 +1027,27 @@ async def generate_image(
         configured = list(cfg.image.fallback) if cfg.image.fallback else default_fallbacks
         fallbacks = [fb for fb in configured if fb != primary]
         chain = [primary] + fallbacks
+
+    # =====================================================================
+    # NEVER, EVER FALL BACK TO FLUX.
+    # "spark" is the flux / z-image image backend on the GPU box. It produces
+    # visibly lower-quality, off-style frames and was the cause of the ugly
+    # mid-video style seam in the image-driven-character (Steve Gibson) render.
+    # Per explicit, non-negotiable instruction, flux is BANNED as an image
+    # provider here: we strip "spark" out of EVERY chain — even one that was
+    # explicitly requested via `provider=` or supplied by config.image.fallback —
+    # so image generation can NEVER silently degrade to flux. If codex (plus any
+    # remaining non-flux providers like nano-banana / mflux) cannot produce the
+    # image, we HARD-FAIL loudly rather than ship a single flux frame.
+    # =====================================================================
+    chain = [p for p in chain if p != "spark"]
+    fallbacks = [p for p in fallbacks if p != "spark"]
+    if not chain:
+        raise AgentError(
+            "image generation refused: flux/spark is permanently banned as an "
+            "image provider and was the only candidate. No flux — hard-failing.",
+            kind=ErrorKind.INVALID_REQUEST,
+        )
 
     effective_primary = chain[0]
     if logger is not None:
