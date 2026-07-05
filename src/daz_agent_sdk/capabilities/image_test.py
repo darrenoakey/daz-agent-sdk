@@ -236,29 +236,78 @@ def test_generate_codex_image():
     assert header == b"\x89PNG", f"Expected PNG, got header {header!r}"
 
 
-def test_codex_rejects_input_image():
-    """codex provider should reject image editing (input image) with INVALID_REQUEST."""
-    if not _codex_available():
-        pytest.skip("codex CLI not on PATH")
+def test_codex_submits_input_image_to_service(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """codex provider uploads input images to the shared image service."""
+    import base64
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    import tempfile
-    # write a tiny fake PNG header so the path-exists check passes
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        tmp.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
-        tmp_path = tmp.name
+    import daz_agent_sdk.capabilities.image as image_module
 
-    with pytest.raises(AgentError) as exc_info:
-        asyncio.run(
+    png_data = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQCR"
+        "9I9ZAAAAAElFTkSuQmCC"
+    )
+    input_path = tmp_path / "source.png"
+    input_path.write_bytes(png_data)
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):  # noqa: ANN001
+            return
+
+        def do_POST(self):  # noqa: N802
+            assert self.path == "/jobs"
+            length = int(self.headers["Content-Length"])
+            captured["body"] = json.loads(self.rfile.read(length))
+            self.send_response(202)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"id":"job-1"}')
+
+        def do_GET(self):  # noqa: N802
+            if self.path == "/jobs/job-1":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"id":"job-1","status":"done","attempts":1}')
+                return
+            if self.path == "/jobs/job-1/image":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.end_headers()
+                self.wfile.write(png_data)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(image_module, "_IMAGE_SERVICE_URL", f"http://127.0.0.1:{server.server_port}")
+        result = asyncio.run(
             generate_image(
                 "edit this",
                 width=512,
                 height=512,
-                image=tmp_path,
+                image=input_path,
                 provider="codex",
                 timeout=30.0,
             )
         )
-    assert exc_info.value.kind == ErrorKind.INVALID_REQUEST
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.model_used.model_id == "macmini-image-service"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["prompt"] == "edit this"
+    assert body["width"] == 512
+    assert body["height"] == 512
+    assert body["source_images"] == [base64.b64encode(png_data).decode("ascii")]
 
 
 # ##################################################################

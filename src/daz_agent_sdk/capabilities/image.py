@@ -4,6 +4,7 @@ import asyncio
 import base64
 import fcntl
 import gc
+import json
 import os
 import shutil as _shutil
 import tempfile
@@ -11,6 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+import aiohttp
 
 from daz_agent_sdk.config import Config, get_image_steps, load_config
 from daz_agent_sdk.logging_ import ConversationLogger
@@ -409,14 +412,160 @@ _MFLUX_MODEL = ModelInfo(
 # codex writes generated images to ~/.codex/generated_images/<session_id>/ig_*.png
 _CODEX_MODEL = ModelInfo(
     provider="codex",
-    model_id="codex-image-generation",
-    display_name="Codex native image_generation",
+    model_id="macmini-image-service",
+    display_name="Mac mini image generation service",
     capabilities=frozenset({Capability.IMAGE}),
     tier=Tier.HIGH,
     supports_streaming=False,
     supports_structured=False,
     supports_conversation=False,
 )
+
+_IMAGE_SERVICE_URL = "http://10.0.0.46:8830"
+
+
+def _service_input_images(input_image: Path | list[Path] | None) -> list[str]:
+    if input_image is None:
+        return []
+    paths = input_image if isinstance(input_image, list) else [input_image]
+    encoded: list[str] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        if not path.exists():
+            raise AgentError(
+                f"Input image not found: {path}",
+                kind=ErrorKind.INVALID_REQUEST,
+            )
+        encoded.append(base64.b64encode(path.read_bytes()).decode("ascii"))
+    return encoded
+
+
+async def _service_json(
+    session: aiohttp.ClientSession,
+    method: str,
+    path: str,
+    *,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async with session.request(method, _IMAGE_SERVICE_URL + path, json=payload) as response:
+        text = await response.text()
+        if response.status >= 400:
+            raise AgentError(
+                f"image service {method} {path} returned HTTP {response.status}: {text}",
+                kind=ErrorKind.INTERNAL,
+            )
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            raise AgentError(
+                f"image service {method} {path} returned invalid JSON: {text[:200]}",
+                kind=ErrorKind.INTERNAL,
+            ) from exc
+        if not isinstance(data, dict):
+            raise AgentError(
+                f"image service {method} {path} returned non-object JSON",
+                kind=ErrorKind.INTERNAL,
+            )
+        return data
+
+
+async def _service_image(session: aiohttp.ClientSession, path: str) -> bytes:
+    async with session.get(_IMAGE_SERVICE_URL + path) as response:
+        data = await response.read()
+        if response.status >= 400:
+            raise AgentError(
+                f"image service GET {path} returned HTTP {response.status}: {data[:200]!r}",
+                kind=ErrorKind.INTERNAL,
+            )
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            content_type = response.headers.get("content-type", "")
+            raise AgentError(
+                f"image service returned non-PNG data ({content_type})",
+                kind=ErrorKind.INTERNAL,
+            )
+        return data
+
+
+def _write_service_image(image_data: bytes, output_path: Path, transparent: bool) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = output_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        if transparent:
+            raise AgentError(
+                "transparent image output must be PNG, not JPEG",
+                kind=ErrorKind.INVALID_REQUEST,
+            )
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise AgentError(
+                "Pillow is required to save image service PNG output as JPEG",
+                kind=ErrorKind.NOT_AVAILABLE,
+            ) from exc
+        from io import BytesIO
+
+        with Image.open(BytesIO(image_data)) as image:
+            image.convert("RGB").save(output_path, "JPEG", quality=92)
+        return
+    output_path.write_bytes(image_data)
+
+
+async def _generate_igs(
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    output_path: Path,
+    input_image: Path | list[Path] | None = None,
+    transparent: bool = False,
+    timeout: float = 300.0,
+) -> None:
+    payload: dict[str, Any] = {
+        "prompt": prompt,
+        "width": width,
+        "height": height,
+        "transparent": transparent,
+    }
+    sources = _service_input_images(input_image)
+    if sources:
+        payload["source_images"] = sources
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    client_timeout = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(timeout=client_timeout) as session:
+        created = await _service_json(session, "POST", "/jobs", payload=payload)
+        job_id = str(created.get("id", "")).strip()
+        if not job_id:
+            raise AgentError(
+                f"image service returned no job id: {created}",
+                kind=ErrorKind.INTERNAL,
+            )
+
+        while True:
+            status = await _service_json(session, "GET", f"/jobs/{job_id}")
+            state = status.get("status")
+            if state == "done":
+                break
+            if state == "failed":
+                raise AgentError(
+                    f"image service job {job_id} failed after {status.get('attempts', 0)} attempts: "
+                    f"{status.get('error', '')}",
+                    kind=ErrorKind.INTERNAL,
+                )
+            if state not in {"queued", "running"}:
+                raise AgentError(
+                    f"image service job {job_id} returned unknown status {state!r}",
+                    kind=ErrorKind.INTERNAL,
+                )
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AgentError(
+                    f"image service job {job_id} timed out after {timeout:.0f}s",
+                    kind=ErrorKind.TIMEOUT,
+                )
+            await asyncio.sleep(2)
+
+        image_data = await _service_image(session, f"/jobs/{job_id}/image")
+    _write_service_image(image_data, output_path, transparent)
 
 # NOTE: codex image output is now isolated per-call via a private CODEX_HOME
 # (see _generate_codex). No shared ~/.codex/generated_images pool scan, and no
@@ -582,10 +731,23 @@ async def _codex_image_once(
         )
 
         if not candidates:
-            # codex ran (rc=0) but produced NO image in our private dir — the
-            # content/safety-refusal signal. Return codex's own message so the
-            # caller can rewrite + retry. A string (not None) means "blocked".
-            return _extract_codex_agent_message(stdout) or (
+            # codex ran (rc=0) but produced NO image in our private dir. Two cases:
+            #  (a) genuine content/safety refusal — codex's message reflects that,
+            #      return it so the caller can rewrite + retry. A string means "blocked".
+            #  (b) codex 0.140+ regression: image_gen.imagegen silently no longer
+            #      persists a file to disk, but codex reports success anyway. This is
+            #      a broken tool, NOT a refusal — the rewrite loop can't help. Raise
+            #      INTERNAL so the fallback chain (spark / nano-banana-2 / mflux) takes
+            #      over instead of churning through pointless rewrites.
+            msg = _extract_codex_agent_message(stdout)
+            if msg and _looks_like_success(msg):
+                raise AgentError(
+                    f"codex reported success but wrote no image file (codex 0.140+ "
+                    f"image_gen regression). Skipping rewrite loop, falling through. "
+                    f"codex message: {msg!r}",
+                    kind=ErrorKind.INTERNAL,
+                )
+            return msg or (
                 "codex produced no image (likely safety refusal). "
                 f"stdout tail: {stdout[-300:]!r}"
             )
@@ -596,6 +758,27 @@ async def _codex_image_once(
         return None
     finally:
         _shutil.rmtree(_call_codex_home, ignore_errors=True)
+
+
+# Phrases codex uses when image_gen.imagegen SUCCEEDED. If the no-file case
+# coincides with one of these, the tool itself is broken (not a refusal), so
+# we skip the rewrite loop and fall through to the next provider.
+_SUCCESS_PHRASES = (
+    "generated", "created", "produced", "completed", "success", "done",
+    "here is", "here's",
+)
+
+
+def _looks_like_success(msg: str) -> bool:
+    """True if a codex agent_message reads as a success confirmation rather
+    than a refusal/blocking message."""
+    m = msg.strip().lower()
+    if not m:
+        return False
+    # explicit refusal markers outweigh success words
+    if any(w in m for w in ("refus", "block", "cannot", "can't", "unable", "violat", "policy")):
+        return False
+    return any(p in m for p in _SUCCESS_PHRASES)
 
 
 def _extract_codex_agent_message(stdout: str) -> str:
@@ -802,20 +985,17 @@ async def _generate_one(
             height=height,
         )
 
-    # codex — native image_generation tool via OpenAI backend
+    # codex — central mac mini service backed by ChatGPT image generation.
     if provider_name == "codex":
-        await _generate_codex(
+        await _generate_igs(
             prompt,
             width=width,
             height=height,
             output_path=output_path,
             input_image=input_image,
+            transparent=transparent,
             timeout=timeout,
-            # No model override — codex uses its config.toml default model
-            # (a pinned model can become unsupported for the account).
         )
-        if transparent:
-            await _remove_background(output_path, timeout=timeout)
         return ImageResult(
             path=output_path,
             model_used=_CODEX_MODEL,

@@ -1,13 +1,19 @@
 package capability
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/jpeg"
+	_ "image/png"
 	"io"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -21,11 +27,13 @@ func codexImageDir() string {
 	return filepath.Join(os.Getenv("HOME"), ".codex", "generated_images")
 }
 
-// codexModelInfo describes the codex native image_gen.imagegen tool for result metadata.
+const imageServiceURL = "http://10.0.0.46:8830"
+
+// codexModelInfo describes the shared mac mini image service for result metadata.
 var codexModelInfo = agentsdk.ModelInfo{
 	Provider:     "codex",
-	ModelID:      "codex-image-generation",
-	DisplayName:  "Codex native image_gen.imagegen",
+	ModelID:      "macmini-image-service",
+	DisplayName:  "Mac mini image generation service",
 	Capabilities: []agentsdk.Capability{agentsdk.CapabilityImage},
 	Tier:         agentsdk.TierHigh,
 }
@@ -73,26 +81,21 @@ func codexImagePrompt(prompt string, width, height int, hasInputs bool, numInput
 	)
 }
 
-// generateCodex shells out to `codex exec` and asks the codex CLI to invoke
-// its built-in `image_gen.imagegen` tool. The generated PNG is written into
-// ~/.codex/generated_images/<thread_id>/ig_*.png; we recover it and copy to
-// the requested output path. Multiple input images are passed via -i flags.
+// generateCodex routes image generation through the shared mac mini image
+// service. The service owns the ChatGPT/Codex image backend; callers must not
+// shell out to codex directly from this SDK path.
 func generateCodex(ctx context.Context, prompt string, opts ImageOpts, timeout time.Duration) (*agentsdk.ImageResult, error) {
-	if _, err := exec.LookPath("codex"); err != nil {
-		return nil, agentsdk.NewAgentError(
-			"codex CLI not found on PATH",
-			agentsdk.ErrorNotAvailable, nil,
-		)
-	}
-
 	inputs := opts.inputImages()
+	sourceImages := make([]string, 0, len(inputs))
 	for _, p := range inputs {
-		if _, err := os.Stat(p); err != nil {
+		data, err := os.ReadFile(p)
+		if err != nil {
 			return nil, agentsdk.NewAgentError(
 				fmt.Sprintf("input image not found: %s", p),
 				agentsdk.ErrorInvalidRequest, nil,
 			)
 		}
+		sourceImages = append(sourceImages, base64.StdEncoding.EncodeToString(data))
 	}
 
 	outputPath, err := resolveOutputPath(opts.Output)
@@ -100,113 +103,22 @@ func generateCodex(ctx context.Context, prompt string, opts ImageOpts, timeout t
 		return nil, err
 	}
 
-	instruction := codexImagePrompt(prompt, opts.Width, opts.Height, len(inputs) > 0, len(inputs))
-
-	args := []string{
-		"exec",
-		"--dangerously-bypass-approvals-and-sandbox",
-		"--skip-git-repo-check",
-		"--ephemeral",
-		"--json",
-		"-m", "gpt-5.3-codex",
-	}
-	for _, p := range inputs {
-		args = append(args, "-i", p)
-	}
-	args = append(args, "--", instruction)
-
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(reqCtx, "codex", args...)
-	// Strip CLAUDECODE — propagates from Claude Code sessions and segfaults codex.
-	env := os.Environ()
-	out := env[:0]
-	for _, e := range env {
-		if strings.HasPrefix(e, "CLAUDECODE=") {
-			continue
-		}
-		out = append(out, e)
-	}
-	cmd.Env = out
-	cmd.Stdin = nil
-
-	// Wall-clock instant BEFORE codex runs. The only image we accept as this
-	// call's result is one written after this instant (see the freshness gate
-	// in findCodexImages). This makes returning a stale image from a previous
-	// generation impossible — silently succeeding with the wrong picture is
-	// worse than failing loudly. 2s slack absorbs mtime/clock granularity.
-	genStart := time.Now().Add(-2 * time.Second)
-
-	stdoutPipe, err := cmd.StdoutPipe()
+	jobID, err := createImageServiceJob(reqCtx, prompt, opts.Width, opts.Height, opts.Transparent, sourceImages)
 	if err != nil {
-		return nil, fmt.Errorf("codex stdout pipe: %w", err)
+		return nil, err
 	}
-	stderrPipe, err := cmd.StderrPipe()
+	if err := waitImageServiceJob(reqCtx, jobID); err != nil {
+		return nil, err
+	}
+	data, err := fetchImageServiceImage(reqCtx, jobID)
 	if err != nil {
-		return nil, fmt.Errorf("codex stderr pipe: %w", err)
+		return nil, err
 	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, agentsdk.NewAgentError(
-			fmt.Sprintf("codex start failed: %v", err),
-			agentsdk.ErrorInternal, nil,
-		)
-	}
-
-	var stdoutBuf strings.Builder
-	threadID := ""
-	go func() {
-		// Stream stderr to discard but consume to avoid blocking
-		_, _ = io.Copy(io.Discard, stderrPipe)
-	}()
-
-	scanner := bufio.NewScanner(stdoutPipe)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		stdoutBuf.WriteString(line)
-		stdoutBuf.WriteString("\n")
-		if threadID == "" {
-			var event struct {
-				Type     string `json:"type"`
-				ThreadID string `json:"thread_id"`
-			}
-			if err := json.Unmarshal([]byte(line), &event); err == nil {
-				if event.Type == "thread.started" && event.ThreadID != "" {
-					threadID = event.ThreadID
-				}
-			}
-		}
-	}
-	if err := cmd.Wait(); err != nil {
-		if reqCtx.Err() == context.DeadlineExceeded {
-			return nil, agentsdk.NewAgentError(
-				fmt.Sprintf("codex image generation timed out after %s", timeout),
-				agentsdk.ErrorTimeout, nil,
-			)
-		}
-		return nil, agentsdk.NewAgentError(
-			fmt.Sprintf("codex exited with error: %v: %s", err, tail(stdoutBuf.String(), 500)),
-			agentsdk.ErrorInternal, nil,
-		)
-	}
-
-	// Recover the generated file — ONLY images written after genStart (i.e. by
-	// THIS call). A stale image from a previous generation can never qualify.
-	candidates := findCodexImages(threadID, genStart)
-	if len(candidates) == 0 {
-		return nil, agentsdk.NewAgentError(
-			fmt.Sprintf("codex reported success but produced NO new image for this call "+
-				"(refusing to return a stale image from a previous generation). stdout tail: %s",
-				tail(stdoutBuf.String(), 500)),
-			agentsdk.ErrorInternal, nil,
-		)
-	}
-
-	newest := candidates[0]
-	if err := copyFile(newest, outputPath); err != nil {
-		return nil, fmt.Errorf("copying codex output to %s: %w", outputPath, err)
+	if err := writeServiceImage(data, outputPath, opts.Transparent); err != nil {
+		return nil, err
 	}
 
 	return &agentsdk.ImageResult{
@@ -216,6 +128,152 @@ func generateCodex(ctx context.Context, prompt string, opts ImageOpts, timeout t
 		Width:     opts.Width,
 		Height:    opts.Height,
 	}, nil
+}
+
+func createImageServiceJob(ctx context.Context, prompt string, width, height int, transparent bool, sourceImages []string) (string, error) {
+	body := map[string]any{
+		"prompt":      prompt,
+		"width":       width,
+		"height":      height,
+		"transparent": transparent,
+	}
+	if len(sourceImages) > 0 {
+		body["source_images"] = sourceImages
+	}
+	var response struct {
+		ID string `json:"id"`
+	}
+	if err := imageServiceJSON(ctx, http.MethodPost, "/jobs", body, &response); err != nil {
+		return "", err
+	}
+	if response.ID == "" {
+		return "", agentsdk.NewAgentError("image service returned no job id", agentsdk.ErrorInternal, nil)
+	}
+	return response.ID, nil
+}
+
+func waitImageServiceJob(ctx context.Context, jobID string) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		var status struct {
+			Status   string `json:"status"`
+			Attempts int    `json:"attempts"`
+			Error    string `json:"error"`
+		}
+		if err := imageServiceJSON(ctx, http.MethodGet, "/jobs/"+jobID, nil, &status); err != nil {
+			return err
+		}
+		switch status.Status {
+		case "done":
+			return nil
+		case "failed":
+			return agentsdk.NewAgentError(
+				fmt.Sprintf("image service job %s failed after %d attempts: %s", jobID, status.Attempts, status.Error),
+				agentsdk.ErrorInternal, nil,
+			)
+		case "queued", "running":
+		default:
+			return agentsdk.NewAgentError(
+				fmt.Sprintf("image service job %s returned unknown status %q", jobID, status.Status),
+				agentsdk.ErrorInternal, nil,
+			)
+		}
+		select {
+		case <-ctx.Done():
+			return agentsdk.NewAgentError(
+				fmt.Sprintf("image service job %s timed out: %v", jobID, ctx.Err()),
+				agentsdk.ErrorTimeout, nil,
+			)
+		case <-ticker.C:
+		}
+	}
+}
+
+func imageServiceJSON(ctx context.Context, method, path string, payload any, target any) error {
+	var body io.Reader
+	if payload != nil {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, imageServiceURL+path, body)
+	if err != nil {
+		return err
+	}
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return agentsdk.NewAgentError(fmt.Sprintf("image service request failed: %v", err), agentsdk.ErrorInternal, nil)
+	}
+	defer func() { _ = response.Body.Close() }()
+	data, _ := io.ReadAll(response.Body)
+	if response.StatusCode >= 400 {
+		return agentsdk.NewAgentError(
+			fmt.Sprintf("image service %s %s returned HTTP %d: %s", method, path, response.StatusCode, string(data)),
+			agentsdk.ErrorInternal, nil,
+		)
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		return agentsdk.NewAgentError(
+			fmt.Sprintf("image service %s %s returned invalid JSON: %v", method, path, err),
+			agentsdk.ErrorInternal, nil,
+		)
+	}
+	return nil
+}
+
+func fetchImageServiceImage(ctx context.Context, jobID string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, imageServiceURL+"/jobs/"+jobID+"/image", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, agentsdk.NewAgentError(fmt.Sprintf("image service image fetch failed: %v", err), agentsdk.ErrorInternal, nil)
+	}
+	defer func() { _ = response.Body.Close() }()
+	data, _ := io.ReadAll(response.Body)
+	if response.StatusCode >= 400 {
+		return nil, agentsdk.NewAgentError(
+			fmt.Sprintf("image service GET /jobs/%s/image returned HTTP %d: %s", jobID, response.StatusCode, string(data)),
+			agentsdk.ErrorInternal, nil,
+		)
+	}
+	if !bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		return nil, agentsdk.NewAgentError("image service returned non-PNG data", agentsdk.ErrorInternal, nil)
+	}
+	return data, nil
+}
+
+func writeServiceImage(data []byte, outputPath string, transparent bool) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	ext := strings.ToLower(filepath.Ext(outputPath))
+	if ext == ".jpg" || ext == ".jpeg" {
+		if transparent {
+			return agentsdk.NewAgentError("transparent image output must be PNG, not JPEG", agentsdk.ErrorInvalidRequest, nil)
+		}
+		img, _, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			return fmt.Errorf("decoding service PNG: %w", err)
+		}
+		out := image.NewRGBA(img.Bounds())
+		draw.Draw(out, out.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+		draw.Draw(out, out.Bounds(), img, img.Bounds().Min, draw.Over)
+		file, err := os.Create(outputPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = file.Close() }()
+		return jpeg.Encode(file, out, &jpeg.Options{Quality: 92})
+	}
+	return os.WriteFile(outputPath, data, 0o644)
 }
 
 // findCodexImages returns generated codex images sorted newest-first, RESTRICTED
@@ -289,4 +347,12 @@ func tail(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// codexModel returns the configured codex model, defaulting to gpt-5.5.
+func codexModel(cfg *agentsdk.Config) string {
+	if cfg != nil && cfg.Image.CodexModel != "" {
+		return cfg.Image.CodexModel
+	}
+	return "gpt-5.5"
 }
