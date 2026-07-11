@@ -153,6 +153,7 @@ class GeminiProvider(Provider):
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
+        max_tokens: int | None = None,
         timeout: float = 300.0,
         setting_sources: list[str] | None = None,  # noqa: ARG002 - claude-only lean-env knob
     ) -> Response | StructuredResponse:

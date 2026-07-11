@@ -153,6 +153,7 @@ class OllamaProvider(Provider):
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
+        max_tokens: int | None = None,
         timeout: float = 300.0,
         setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:
@@ -183,6 +184,8 @@ class OllamaProvider(Provider):
             "messages": msg_list,
             "stream": False,
         }
+        if max_tokens is not None:
+            payload["options"] = {"num_predict": max_tokens}
         if schema is not None:
             payload["format"] = schema.model_json_schema()
 

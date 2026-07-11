@@ -285,3 +285,26 @@ def test_answer_from_message_both_empty_returns_empty() -> None:
     from daz_agent_sdk.providers.arbiter import _answer_from_message
     assert _answer_from_message({}) == ""
     assert _answer_from_message({"content": "", "reasoning": ""}) == ""
+
+
+# ##################################################################
+# max_tokens plumbing — the parameter must actually reach the server
+@pytest.mark.asyncio
+async def test_complete_max_tokens_caps_output() -> None:
+    provider = ArbiterProvider()
+    if not await provider.available():
+        pytest.skip("arbiter unreachable")
+    models = await provider.list_models()
+    target = next((m for m in models if m.model_id == "qwen3.6-35b"), None)
+    if target is None:
+        pytest.skip("qwen3.6-35b not registered")
+    messages = [Message(role="user", content="Count from one to one thousand in words, without stopping.")]
+    # a 32-token cap must be honored by the server: either a tiny visible
+    # response, or (for a reasoning model) the thinking consumes the whole
+    # budget and the empty-content guard raises — both prove the cap arrived,
+    # since the un-capped default (4096) would produce a long response.
+    try:
+        result = await provider.complete(messages, target, timeout=300.0, max_tokens=32)
+        assert len((result.text or "").split()) < 200
+    except AgentError as exc:
+        assert "no answer content" in str(exc)

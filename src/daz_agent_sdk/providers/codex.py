@@ -167,6 +167,7 @@ class CodexProvider(Provider):
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
+        max_tokens: int | None = None,
         timeout: float = 300.0,
         setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:

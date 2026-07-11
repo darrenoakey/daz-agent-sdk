@@ -179,6 +179,7 @@ class ArbiterProvider(Provider):
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
+        max_tokens: int | None = None,
         timeout: float = 900.0,
     ) -> Response | StructuredResponse:
         conversation_id = uuid4()
@@ -207,6 +208,11 @@ class ArbiterProvider(Provider):
             "messages": msg_list,
             "stream": False,
         }
+        # reasoning models spend completion budget on thinking BEFORE the
+        # visible answer; the arbiter worker's default cap (4096) truncates
+        # long prose mid-sentence once a big prompt provokes long thinking.
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",

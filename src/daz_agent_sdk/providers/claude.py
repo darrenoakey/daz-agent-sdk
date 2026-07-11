@@ -150,6 +150,7 @@ class ClaudeProvider:
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         max_turns: int = 1,
+        max_tokens: int | None = None,
         timeout: float = 300.0,
         mcp_servers: dict[str, Any] | None = None,
         setting_sources: list[str] | tuple[str, ...] | None = None,

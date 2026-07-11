@@ -58,6 +58,7 @@ class Agent:
         model: str | None = None,
         timeout: float = 300.0,
         max_turns: int = 1,
+        max_tokens: int | None = None,
         tools: list[str] | None = None,
         cwd: str | Path | None = None,
         setting_sources: list[str] | tuple[str, ...] | None = None,
@@ -69,6 +70,8 @@ class Agent:
         complete_extra: dict[str, Any] = {}
         if setting_sources is not None:
             complete_extra["setting_sources"] = list(setting_sources)
+        if max_tokens is not None:
+            complete_extra["max_tokens"] = max_tokens
         messages: list[Message] = []
         if system is not None:
             messages.append(Message(role="system", content=system))
