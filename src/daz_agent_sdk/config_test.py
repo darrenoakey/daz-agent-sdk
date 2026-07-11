@@ -84,7 +84,7 @@ def test_default_image_model(tmp_path: Path) -> None:
 
 def test_default_codex_model(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.codex_model == "gpt-5.3-codex"
+    assert cfg.image.codex_model == "gpt-5.5"
 
 
 def test_codex_model_override(tmp_path: Path) -> None:

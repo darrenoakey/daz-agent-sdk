@@ -237,3 +237,44 @@ def parse_json_from_llm(text: str) -> Any:
             break
 
     raise json.JSONDecodeError("No valid JSON found in text", text, 0)
+
+
+# ##################################################################
+# validate structured json
+# validate parsed LLM JSON against a pydantic schema, coercing the common
+# model mistakes seen in the wild before giving up:
+#   1. the "schema echo" quirk — the model returns {"properties": {...}}
+#      (the JSON-schema shape) instead of an instance.
+#   2. the "missing wrapper" quirk — for a schema whose single field is a
+#      list of items, the model returns ONE item dict (or a bare list of
+#      item dicts) instead of {"field": [...]}. Observed live: a
+#      CharactersList {"characters": [...]} request answered with a single
+#      character object, which previously failed the whole call.
+# raises pydantic.ValidationError if nothing validates.
+def validate_structured_json(schema: type[BaseModel], parsed_json: Any) -> BaseModel:
+    from typing import get_args, get_origin
+
+    # quirk 1: schema echo
+    if isinstance(parsed_json, dict) and "properties" in parsed_json:
+        props = parsed_json["properties"]
+        if isinstance(props, dict) and all(not isinstance(v, dict) for v in props.values()):
+            parsed_json = props
+
+    try:
+        return schema.model_validate(parsed_json)
+    except Exception:
+        # quirk 2: missing wrapper — only for single-list-field schemas
+        fields = getattr(schema, "model_fields", {})
+        if len(fields) == 1:
+            (field_name, field_info), = fields.items()
+            annotation = field_info.annotation
+            if get_origin(annotation) is list:
+                (item_type,) = get_args(annotation) or (None,)
+                if isinstance(item_type, type) and issubclass(item_type, BaseModel):
+                    if isinstance(parsed_json, list):
+                        items = [item_type.model_validate(x) for x in parsed_json]
+                        return schema.model_validate({field_name: items})
+                    if isinstance(parsed_json, dict):
+                        item = item_type.model_validate(parsed_json)
+                        return schema.model_validate({field_name: [item]})
+        raise

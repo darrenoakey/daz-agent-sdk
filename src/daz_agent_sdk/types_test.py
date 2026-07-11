@@ -18,6 +18,7 @@ from daz_agent_sdk.types import (
     StructuredResponse,
     Tier,
     parse_json_from_llm,
+    validate_structured_json,
 )
 from pathlib import Path
 
@@ -242,3 +243,52 @@ def test_parse_json_with_whitespace() -> None:
     text = '  \n  {"a": 1}  \n  '
     result = parse_json_from_llm(text)
     assert result == {"a": 1}
+
+
+# ##################################################################
+# validate structured json
+# wrapper coercion for the "missing wrapper" and "schema echo" model quirks
+class _Item(BaseModel):
+    name: str
+
+
+class _Wrapper(BaseModel):
+    characters: list[_Item]
+
+
+class _TwoField(BaseModel):
+    a: str
+    b: str
+
+
+def test_validate_structured_normal_shape() -> None:
+    out = validate_structured_json(_Wrapper, {"characters": [{"name": "X"}]})
+    assert [c.name for c in out.characters] == ["X"]
+
+
+def test_validate_structured_single_item_wrapped() -> None:
+    # observed live: model returned one character object instead of the
+    # {"characters": [...]} wrapper — must coerce, not fail the call
+    out = validate_structured_json(_Wrapper, {"name": "Ewan Cross"})
+    assert [c.name for c in out.characters] == ["Ewan Cross"]
+
+
+def test_validate_structured_bare_list_wrapped() -> None:
+    out = validate_structured_json(_Wrapper, [{"name": "A"}, {"name": "B"}])
+    assert [c.name for c in out.characters] == ["A", "B"]
+
+
+def test_validate_structured_schema_echo_quirk() -> None:
+    out = validate_structured_json(_TwoField, {"properties": {"a": "1", "b": "2"}, "type": "object"})
+    assert out.a == "1" and out.b == "2"
+
+
+def test_validate_structured_genuine_mismatch_raises() -> None:
+    with pytest.raises(Exception):
+        validate_structured_json(_Wrapper, {"bogus": 1})
+
+
+def test_validate_structured_multi_field_schema_not_coerced() -> None:
+    # wrapper coercion must ONLY apply to single-list-field schemas
+    with pytest.raises(Exception):
+        validate_structured_json(_TwoField, {"name": "not a two-field"})

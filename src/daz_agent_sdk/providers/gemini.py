@@ -71,6 +71,11 @@ def _classify_error(err: Exception) -> ErrorKind:
         return ErrorKind.RATE_LIMIT
     if "401" in msg or "403" in msg or "api_key" in msg or "permission" in msg or "unauthenticated" in msg:
         return ErrorKind.AUTH
+    # google retired Gemini Code Assist for individuals — the CLI hard-fails at
+    # auth with IneligibleTierError until the account migrates to Antigravity.
+    # that is an account-eligibility failure, not an internal error.
+    if "ineligibletiererror" in msg or "error authenticating" in msg:
+        return ErrorKind.AUTH
     if "timeout" in msg or "timed out" in msg or "deadline" in msg:
         return ErrorKind.TIMEOUT
     if "400" in msg or "invalid" in msg or "bad request" in msg:

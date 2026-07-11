@@ -29,7 +29,7 @@ from daz_agent_sdk.types import (
 _CODEX_MODELS = [
     ModelInfo(
         provider="codex",
-        model_id="gpt-5.3-codex",
+        model_id="gpt-5.5",
         display_name="GPT-5.3 Codex",
         capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
         tier=Tier.HIGH,

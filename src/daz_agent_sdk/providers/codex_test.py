@@ -21,7 +21,7 @@ from daz_agent_sdk.types import (
 
 # ##################################################################
 # helper — make model info
-def _make_model(model_id: str = "gpt-5.3-codex") -> ModelInfo:
+def _make_model(model_id: str = "gpt-5.5") -> ModelInfo:
     return ModelInfo(
         provider="codex",
         model_id=model_id,

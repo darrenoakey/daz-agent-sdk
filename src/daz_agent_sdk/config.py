@@ -41,7 +41,7 @@ class ImageConfig:
     # codex_model is the model passed to `codex exec` for native image generation.
     # the default suits a Codex-account login; a ChatGPT-account login must override
     # this (e.g. "gpt-5.5") since codex-specific models are rejected on that auth.
-    codex_model: str = "gpt-5.3-codex"
+    codex_model: str = "gpt-5.5"
     tiers: dict[str, ImageTierConfig] = field(default_factory=dict)
     fallback: list[str] = field(default_factory=list)
     transparent_post_process: str = "birefnet"
@@ -151,12 +151,12 @@ class Config:
         defaults: dict[str, list[str]] = {
             "very_high": [
                 "claude:claude-opus-4-6",
-                "codex:gpt-5.3-codex",
+                "codex:gpt-5.5",
                 "gemini:gemini-2.5-pro",
             ],
             "high": [
                 "claude:claude-opus-4-6",
-                "codex:gpt-5.3-codex",
+                "codex:gpt-5.5",
                 "gemini:gemini-2.5-pro",
             ],
             "medium": [
@@ -208,7 +208,7 @@ def _build_image_config(raw: dict[str, Any]) -> ImageConfig:
 
     return ImageConfig(
         model=raw.get("model", "z-image-turbo"),
-        codex_model=raw.get("codex_model", "gpt-5.3-codex"),
+        codex_model=raw.get("codex_model", "gpt-5.5"),
         tiers=tiers,
         fallback=list(fallback),
         transparent_post_process=post_process,

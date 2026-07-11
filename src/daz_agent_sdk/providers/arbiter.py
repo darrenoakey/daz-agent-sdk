@@ -19,6 +19,7 @@ from daz_agent_sdk.types import (
     T,
     Tier,
     parse_json_from_llm,
+    validate_structured_json,
 )
 
 
@@ -231,15 +232,14 @@ class ArbiterProvider(Provider):
         if schema is not None:
             try:
                 parsed_json = parse_json_from_llm(text)
-                if isinstance(parsed_json, dict) and "properties" in parsed_json:
-                    props = parsed_json["properties"]
-                    if isinstance(props, dict) and all(not isinstance(v, dict) for v in props.values()):
-                        parsed_json = props
-                parsed_instance = schema.model_validate(parsed_json)
+                parsed_instance = validate_structured_json(schema, parsed_json)
             except Exception as exc:
+                # the MODEL failed to satisfy the schema — a retry or another
+                # provider may succeed, so this must stay retryable (INTERNAL),
+                # never INVALID_REQUEST which aborts the whole fallback chain.
                 raise AgentError(
                     f"Failed to parse structured response: {exc}",
-                    kind=ErrorKind.INVALID_REQUEST,
+                    kind=ErrorKind.INTERNAL,
                 ) from exc
             return StructuredResponse(
                 text=text,
