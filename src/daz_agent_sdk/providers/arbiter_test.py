@@ -258,3 +258,30 @@ async def test_complete_qwen_reasoning_model() -> None:
     # content may be null when max_tokens runs out mid-reasoning; our
     # provider falls back to the reasoning field so text is never empty
     assert resp.text.strip() != ""
+
+
+# ##################################################################
+# answer from message — reasoning-vs-content extraction (pure unit tests)
+def test_answer_from_message_prefers_content() -> None:
+    from daz_agent_sdk.providers.arbiter import _answer_from_message
+    msg = {"content": "The story text.", "reasoning": "planning notes"}
+    assert _answer_from_message(msg) == "The story text."
+
+
+def test_answer_from_message_empty_content_with_reasoning_raises_retryable() -> None:
+    # an interrupted generation has reasoning but no answer — that must be a
+    # retryable failure, never silently handed back as the answer (observed
+    # live: chain-of-thought saved as a novel section's prose).
+    from daz_agent_sdk.providers.arbiter import _answer_from_message
+    from daz_agent_sdk.types import AgentError, ErrorKind
+    import pytest as _pytest
+    msg = {"content": "", "reasoning": "1. Analyze the user input..."}
+    with _pytest.raises(AgentError) as exc_info:
+        _answer_from_message(msg)
+    assert exc_info.value.kind == ErrorKind.INTERNAL
+
+
+def test_answer_from_message_both_empty_returns_empty() -> None:
+    from daz_agent_sdk.providers.arbiter import _answer_from_message
+    assert _answer_from_message({}) == ""
+    assert _answer_from_message({"content": "", "reasoning": ""}) == ""

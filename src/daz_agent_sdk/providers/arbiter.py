@@ -39,6 +39,31 @@ _KNOWN_TIERS: dict[str, Tier] = {
 
 
 # ##################################################################
+# answer from message
+# reasoning models (qwen3 via vLLM --reasoning-parser qwen3, or remote Ollama
+# thinking mode) put the chain-of-thought in `reasoning` and the final answer
+# in `content`. callers want the answer. When content is EMPTY but reasoning
+# is present, the generation was cut off before the model emitted its answer
+# (worker killed, timeout, budget exhausted) — returning the reasoning as if
+# it were the answer hands the caller planning notes instead of prose
+# (observed live: a novel section saved chain-of-thought as story text). That
+# case must be a retryable failure so the fallback chain can try again or
+# fall through to the next provider.
+def _answer_from_message(message: dict) -> str:
+    content = message.get("content") or ""
+    if content.strip():
+        return content
+    reasoning = message.get("reasoning") or ""
+    if reasoning.strip():
+        raise AgentError(
+            "model produced reasoning but no answer content (generation was "
+            "interrupted or the thinking budget crowded out the answer)",
+            kind=ErrorKind.INTERNAL,
+        )
+    return ""
+
+
+# ##################################################################
 # classify aiohttp error
 # map aiohttp exceptions to the agent-sdk ErrorKind taxonomy. mirrors
 # the helper in the ollama provider so arbiter failures surface as
@@ -221,12 +246,7 @@ class ArbiterProvider(Provider):
         text = ""
         if choices:
             message = choices[0].get("message") or {}
-            # reasoning models (qwen3 via vLLM --reasoning-parser qwen3) put
-            # the chain-of-thought in `reasoning` and the final answer in
-            # `content`. callers want the answer; fall through to reasoning
-            # only when content is empty (e.g. the model truncated before
-            # emitting a final answer).
-            text = message.get("content") or message.get("reasoning") or ""
+            text = _answer_from_message(message)
         usage_data = data.get("usage", {}) or {}
 
         if schema is not None:
