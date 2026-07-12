@@ -46,10 +46,10 @@ def _service_reachable() -> bool:
 # provider validation
 
 
-def test_image_service_uses_loopback_on_macmini_and_lan_everywhere_else():
+def test_image_service_uses_native_loopback_on_macmini_and_tunnel_elsewhere():
     assert image_module._image_service_url("macmini") == "http://127.0.0.1:8830"
     assert image_module._image_service_url("macmini.local") == "http://127.0.0.1:8830"
-    assert image_module._image_service_url("Darrens-MBP") == "http://10.0.0.46:8830"
+    assert image_module._image_service_url("Darrens-MBP") == "http://127.0.0.1:18831"
 
 
 def test_rejects_unknown_provider():

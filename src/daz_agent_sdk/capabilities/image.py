@@ -32,12 +32,12 @@ _CODEX_MODEL = ModelInfo(
     supports_conversation=False,
 )
 
-_IMAGE_SERVICE_URL = "http://10.0.0.46:8830"
+_IMAGE_SERVICE_URL = "http://127.0.0.1:18831"
 _LOCAL_IMAGE_SERVICE_URL = "http://127.0.0.1:8830"
 
 
 def _image_service_url(hostname: str | None = None) -> str:
-    """Use loopback when the caller is running on the image-service host."""
+    """Use only loopback: native service on macmini, Auto-managed tunnel elsewhere."""
     machine = (hostname if hostname is not None else socket.gethostname()).split(".", 1)[0].lower()
     return _LOCAL_IMAGE_SERVICE_URL if machine == "macmini" else _IMAGE_SERVICE_URL
 
