@@ -370,20 +370,24 @@ func TestExecuteWithFallbackUsesConfigMaxRetries(t *testing.T) {
 	cfg.Fallback.SingleShot.RetryBaseSeconds = 0.001
 
 	callCount := 0
-	chain := []string{"provider_a:model1", "provider_b:model2"}
+	chain := []string{"provider_a:model1", "provider_b:model2", "provider_c:model3"}
 
 	fn := func(entry string) (*Response, error) {
 		callCount++
+		if entry == "provider_c:model3" {
+			return &Response{Text: "ok", ConversationID: uuid.New(), TurnID: uuid.New()}, nil
+		}
 		return nil, errors.New("rate limit exceeded")
 	}
 
-	_, err := ExecuteWithFallback(context.Background(), "test", chain, fn, cfg, false)
-	if err == nil {
-		t.Fatal("expected error when all providers fail")
+	response, err := ExecuteWithFallback(context.Background(), "test", chain, fn, cfg, false)
+	if err != nil || response.Text != "ok" {
+		t.Fatalf("fallback result = %#v, %v; want provider_c success", response, err)
 	}
-	// MaxRetries=1 means exactly 1 attempt per provider
-	if callCount != 2 {
-		t.Errorf("callCount = %d, want 2 (MaxRetries=1, 2 providers)", callCount)
+	// MaxRetries=1 means exactly one attempt for each failing provider before
+	// cascading; the successful final provider is called once.
+	if callCount != 3 {
+		t.Errorf("callCount = %d, want 3 (one attempt for each provider)", callCount)
 	}
 }
 

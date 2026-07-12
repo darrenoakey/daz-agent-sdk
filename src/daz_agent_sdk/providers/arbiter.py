@@ -181,6 +181,7 @@ class ArbiterProvider(Provider):
         max_turns: int = 1,
         max_tokens: int | None = None,
         timeout: float = 900.0,
+        setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:
         conversation_id = uuid4()
         turn_id = uuid4()

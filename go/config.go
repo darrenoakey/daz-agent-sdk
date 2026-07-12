@@ -30,7 +30,8 @@ type ImageTierConfig struct {
 // generation.
 type ImageConfig struct {
 	Model                  string                     `yaml:"model" json:"model"`
-	Tiers                  map[string]ImageTierConfig  `yaml:"tiers" json:"tiers"`
+	CodexModel             string                     `yaml:"codex_model" json:"codex_model"`
+	Tiers                  map[string]ImageTierConfig `yaml:"tiers" json:"tiers"`
 	Fallback               []string                   `yaml:"fallback" json:"fallback"`
 	TransparentPostProcess string                     `yaml:"-" json:"transparent_post_process"`
 }
@@ -79,12 +80,12 @@ type FallbackConfig struct {
 // ~/.daz-agent-sdk/config.yaml. All fields have sensible defaults so no
 // config file is required.
 type Config struct {
-	Tiers     map[string]TierConfig      `yaml:"tiers" json:"tiers"`
-	Providers map[string]map[string]any   `yaml:"providers" json:"providers"`
-	Image     ImageConfig                `yaml:"image" json:"image"`
-	TTS       TtsConfig                  `yaml:"tts" json:"tts"`
-	Logging   LoggingConfig              `yaml:"logging" json:"logging"`
-	Fallback  FallbackConfig             `yaml:"fallback" json:"fallback"`
+	Tiers     map[string]TierConfig     `yaml:"tiers" json:"tiers"`
+	Providers map[string]map[string]any `yaml:"providers" json:"providers"`
+	Image     ImageConfig               `yaml:"image" json:"image"`
+	TTS       TtsConfig                 `yaml:"tts" json:"tts"`
+	Logging   LoggingConfig             `yaml:"logging" json:"logging"`
+	Fallback  FallbackConfig            `yaml:"fallback" json:"fallback"`
 }
 
 // defaultTierChains returns the built-in tier chain mappings.
@@ -92,12 +93,12 @@ func defaultTierChains() map[string]TierConfig {
 	return map[string]TierConfig{
 		"very_high": {Chain: []string{
 			"claude:claude-opus-4-6",
-			"codex:gpt-5.3-codex",
+			"codex:gpt-5.5",
 			"gemini:gemini-2.5-pro",
 		}},
 		"high": {Chain: []string{
 			"claude:claude-opus-4-6",
-			"codex:gpt-5.3-codex",
+			"codex:gpt-5.5",
 			"gemini:gemini-2.5-pro",
 		}},
 		"medium": {Chain: []string{
@@ -236,14 +237,14 @@ type rawConfig struct {
 	Providers map[string]map[string]any `yaml:"providers"`
 	Image     struct {
 		Model       string                     `yaml:"model"`
-		Tiers       map[string]ImageTierConfig  `yaml:"tiers"`
+		Tiers       map[string]ImageTierConfig `yaml:"tiers"`
 		Fallback    []string                   `yaml:"fallback"`
 		Transparent struct {
 			PostProcess string `yaml:"post_process"`
 		} `yaml:"transparent"`
 	} `yaml:"image"`
-	TTS      TtsConfig     `yaml:"tts"`
-	Logging  LoggingConfig `yaml:"logging"`
+	TTS      TtsConfig      `yaml:"tts"`
+	Logging  LoggingConfig  `yaml:"logging"`
 	Fallback FallbackConfig `yaml:"fallback"`
 }
 

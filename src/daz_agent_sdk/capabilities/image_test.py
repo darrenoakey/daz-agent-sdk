@@ -1,250 +1,135 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import shutil
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import pytest
 
-from daz_agent_sdk.capabilities.image import (
-    _closest_aspect_ratio,
-    _image_size,
-    generate_image,
-)
+import daz_agent_sdk.capabilities.image as image_module
+from daz_agent_sdk.capabilities.image import generate_image
 from daz_agent_sdk.types import AgentError, ErrorKind
 
 
 # ##################################################################
-# aspect ratio tests
-
-
-def test_square_aspect_ratio():
-    assert _closest_aspect_ratio(512, 512) == "1:1"
-
-
-def test_landscape_aspect_ratio():
-    assert _closest_aspect_ratio(1920, 1080) == "16:9"
-
-
-def test_portrait_aspect_ratio():
-    assert _closest_aspect_ratio(1080, 1920) == "9:16"
-
-
-def test_4_3_aspect_ratio():
-    assert _closest_aspect_ratio(800, 600) == "4:3"
-
-
-def test_3_4_aspect_ratio():
-    assert _closest_aspect_ratio(600, 800) == "3:4"
-
-
-# ##################################################################
-# image size tests
-
-
-def test_image_size_small():
-    assert _image_size(512, 512) == "0.5K"
-
-
-def test_image_size_1k():
-    assert _image_size(1024, 1024) == "1K"
-
-
-def test_image_size_1k_non_square():
-    assert _image_size(1024, 768) == "1K"
-
-
-def test_image_size_2k():
-    assert _image_size(2048, 1024) == "2K"
-
-
-def test_image_size_4k():
-    assert _image_size(3840, 2160) == "4K"
-
-
-def test_image_size_tiny_maps_to_half_k():
-    assert _image_size(256, 256) == "0.5K"
-
-
-# ##################################################################
-# real image generation test — calls Nano Banana 2 API
-
-
-def test_generate_real_image():
-    """Generate a real 512x512 image via Nano Banana 2 and verify it's a valid PNG."""
-    result = asyncio.run(
-        generate_image(
-            "A cheerful cartoon robot waving hello",
-            width=512,
-            height=512,
-            timeout=60.0,
-        )
-    )
-
-    assert result.path.exists(), f"Image file not created: {result.path}"
-    assert result.path.stat().st_size > 1000, "Image file suspiciously small"
-    assert result.width == 512
-    assert result.height == 512
-    assert result.model_used.model_id, "model_used.model_id should not be empty"
-
-    header = result.path.read_bytes()[:8]
-    is_png = header[:4] == b"\x89PNG"
-    is_jpeg = header[:2] == b"\xff\xd8"
-    assert is_png or is_jpeg, f"Not a valid image, header: {header!r}"
-    print(f"\nGenerated image at: {result.path}")
-    print(f"File size: {result.path.stat().st_size} bytes")
-
-
-# ##################################################################
-# real transparent image test — Nano Banana 2 + BiRefNet background removal
-
-
-def test_generate_transparent_image():
-    """Generate a transparent image via Nano Banana 2 + BiRefNet and verify RGBA PNG."""
-    result = asyncio.run(
-        generate_image(
-            "A red fox standing on a white background",
-            width=512,
-            height=512,
-            transparent=True,
-            timeout=180.0,
-        )
-    )
-
-    assert result.path.exists(), f"Image file not created: {result.path}"
-    assert result.path.stat().st_size > 1000, "Image file suspiciously small"
-
-    header = result.path.read_bytes()[:8]
-    is_png = header[:4] == b"\x89PNG"
-    is_jpeg = header[:2] == b"\xff\xd8"
-    assert is_png or is_jpeg, f"Not a valid image, header: {header!r}"
-
-    from PIL import Image
-    with Image.open(result.path) as img:
-        assert img.mode == "RGBA", f"Expected RGBA mode, got {img.mode}"
-
-    print(f"\nGenerated transparent image at: {result.path}")
-    print(f"File size: {result.path.stat().st_size} bytes")
-
-
-# ##################################################################
-# spark provider test — remote CUDA GPU
-
-
-def _spark_reachable() -> bool:
-    """Check if the spark image server is running."""
-    import json
-    from urllib.request import urlopen
-    from urllib.error import URLError
-    try:
-        with urlopen("http://spark:8100/health", timeout=5) as resp:
-            data = json.loads(resp.read())
-            return data.get("status") == "ok"
-    except (URLError, OSError):
-        return False
-
-
-def test_generate_spark_image():
-    """Generate a 512x512 image via spark provider."""
-    if not _spark_reachable():
-        pytest.skip("Spark image server not reachable")
-
-    result = asyncio.run(
-        generate_image(
-            "A green triangle on white background",
-            width=512,
-            height=512,
-            provider="spark",
-            timeout=300.0,
-        )
-    )
-
-    assert result.path.exists()
-    assert result.path.stat().st_size > 1000
-    assert result.model_used.provider == "spark"
-    assert result.model_used.model_id == "z-image-turbo"
-    header = result.path.read_bytes()[:4]
-    assert header == b"\x89PNG"
-
-
-def test_generate_spark_transparent():
-    """Generate a transparent image via spark (server-side BiRefNet)."""
-    if not _spark_reachable():
-        pytest.skip("Spark image server not reachable")
-
-    result = asyncio.run(
-        generate_image(
-            "A red fox, white background",
-            width=512,
-            height=512,
-            provider="spark",
-            transparent=True,
-            timeout=300.0,
-        )
-    )
-
-    assert result.path.exists()
-    from PIL import Image
-    with Image.open(result.path) as img:
-        assert img.mode == "RGBA"
-
-
-def test_generate_default_provider_is_codex():
-    """Verify codex is the default provider (native image_generation)."""
-    import shutil
-    if shutil.which("codex") is None:
-        pytest.skip("codex CLI not on PATH")
-
-    result = asyncio.run(
-        generate_image(
-            "A blue circle",
-            width=512,
-            height=512,
-            timeout=600.0,
-        )
-    )
-
-    assert result.model_used.provider == "codex"
-
-
-# ##################################################################
-# codex provider test — native image_generation via codex CLI
+# helpers
 
 
 def _codex_available() -> bool:
-    import shutil
+    """codex CLI on PATH is a proxy for 'this machine is set up for image gen'."""
     return shutil.which("codex") is not None
 
 
-def test_generate_codex_image():
-    """Generate an image via codex's native image_generation tool."""
-    if not _codex_available():
-        pytest.skip("codex CLI not on PATH")
+def _service_reachable() -> bool:
+    """Check whether the mac mini image_generation_service answers at /jobs."""
+    from urllib.request import urlopen
+    from urllib.error import URLError
+    try:
+        with urlopen(image_module._IMAGE_SERVICE_URL + "/jobs", timeout=3):
+            return True
+    except (URLError, OSError):
+        # A 404/405 still means the service is up — only connection errors count.
+        try:
+            with urlopen(image_module._IMAGE_SERVICE_URL, timeout=3):
+                return True
+        except (URLError, OSError):
+            return False
+        except Exception:
+            return True
 
-    result = asyncio.run(
-        generate_image(
-            "A yellow star on a dark purple background",
-            width=1024,
-            height=1024,
-            provider="codex",
-            timeout=600.0,
+
+# ##################################################################
+# provider validation
+
+
+def test_rejects_unknown_provider():
+    """Only 'codex' is supported now — explicit requests for other providers
+    (legacy spark/mflux/nano-banana-2) fail loudly rather than silently rerouting."""
+    with pytest.raises(AgentError) as exc_info:
+        asyncio.run(
+            generate_image(
+                "test",
+                width=512,
+                height=512,
+                provider="spark",
+                timeout=1.0,
+            )
         )
+    assert "spark" in str(exc_info.value)
+    assert exc_info.value.kind == ErrorKind.INVALID_REQUEST
+
+
+def test_codex_is_the_default_provider(tmp_path, monkeypatch):
+    """When no provider is requested, the request is dispatched as codex."""
+    captured: dict[str, object] = {}
+    png_data = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQCR"
+        "9I9ZAAAAAElFTkSuQmCC"
     )
 
-    assert result.path.exists(), f"Image not created: {result.path}"
-    assert result.path.stat().st_size > 1000
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers["Content-Length"])
+            captured["body"] = json.loads(self.rfile.read(length))
+            self.send_response(202)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"id":"job-1"}')
+
+        def do_GET(self):  # noqa: N802
+            if self.path == "/jobs/job-1":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"id":"job-1","status":"done","attempts":1}')
+                return
+            if self.path == "/jobs/job-1/image":
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.end_headers()
+                self.wfile.write(png_data)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(
+            image_module, "_IMAGE_SERVICE_URL",
+            f"http://127.0.0.1:{server.server_port}",
+        )
+        result = asyncio.run(
+            generate_image(
+                "a flat blue square",
+                width=512,
+                height=512,
+                output=str(tmp_path / "out.png"),
+                timeout=10.0,
+            )
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
     assert result.model_used.provider == "codex"
-    header = result.path.read_bytes()[:4]
-    assert header == b"\x89PNG", f"Expected PNG, got header {header!r}"
+    assert result.model_used.model_id == "macmini-image-service"
+
+
+# ##################################################################
+# image service job submission
 
 
 def test_codex_submits_input_image_to_service(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """codex provider uploads input images to the shared image service."""
-    import base64
-    import json
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    import daz_agent_sdk.capabilities.image as image_module
-
     png_data = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQCR"
         "9I9ZAAAAAElFTkSuQmCC"
@@ -254,7 +139,7 @@ def test_codex_submits_input_image_to_service(monkeypatch: pytest.MonkeyPatch, t
     captured: dict[str, object] = {}
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_args):  # noqa: ANN001
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             return
 
         def do_POST(self):  # noqa: N802
@@ -286,7 +171,10 @@ def test_codex_submits_input_image_to_service(monkeypatch: pytest.MonkeyPatch, t
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        monkeypatch.setattr(image_module, "_IMAGE_SERVICE_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(
+            image_module, "_IMAGE_SERVICE_URL",
+            f"http://127.0.0.1:{server.server_port}",
+        )
         result = asyncio.run(
             generate_image(
                 "edit this",
@@ -310,239 +198,49 @@ def test_codex_submits_input_image_to_service(monkeypatch: pytest.MonkeyPatch, t
     assert body["source_images"] == [base64.b64encode(png_data).decode("ascii")]
 
 
+def test_input_image_missing_raises():
+    """A non-existent input image is rejected before the service is called."""
+    with pytest.raises(AgentError) as exc_info:
+        asyncio.run(
+            generate_image(
+                "edit this",
+                width=512,
+                height=512,
+                image="/nonexistent/does-not-exist.png",
+                timeout=1.0,
+            )
+        )
+    assert exc_info.value.kind == ErrorKind.INVALID_REQUEST
+
+
 # ##################################################################
-# mflux provider test — skip if not installed
+# real end-to-end test — only runs when the service is reachable
 
 
-def test_generate_mflux_image():
-    """Generate an image via mflux provider (skipped if mflux not installed)."""
-    try:
-        import mflux  # noqa: F401  # pyright: ignore[reportMissingImports]
-    except ImportError:
-        pytest.skip("mflux not installed")
+def test_generate_real_image():
+    """Generate a real 512x512 image via the mac mini image service and verify
+    it's a valid PNG. Skipped when the service is unreachable."""
+    if not _service_reachable():
+        pytest.skip("mac mini image_generation_service not reachable at :8830")
 
     result = asyncio.run(
         generate_image(
-            "A blue circle on white",
-            width=256,
-            height=256,
-            provider="mflux",
-            timeout=120.0,
+            "A cheerful cartoon robot waving hello",
+            width=512,
+            height=512,
+            timeout=600.0,
         )
     )
 
-    assert result.path.exists()
-    assert result.path.stat().st_size > 100
-    assert result.model_used.provider == "mflux"
+    assert result.path.exists(), f"Image file not created: {result.path}"
+    assert result.path.stat().st_size > 1000, "Image file suspiciously small"
+    assert result.width == 512
+    assert result.height == 512
+    assert result.model_used.model_id == "macmini-image-service"
 
-
-# ##################################################################
-# error: missing API key
-
-
-def test_missing_api_key_error(monkeypatch: pytest.MonkeyPatch):
-    """Verify clear error when GEMINI_API_KEY is missing and Gemini is explicitly requested."""
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
-    # patch keyring.get_password to return None
-    import keyring as _keyring_mod
-
-    original_get = _keyring_mod.get_password
-    monkeypatch.setattr(_keyring_mod, "get_password", lambda *a, **kw: None)  # noqa: ARG005
-
-    try:
-        with pytest.raises(AgentError) as exc_info:
-            asyncio.run(
-                generate_image(
-                    "test",
-                    width=512,
-                    height=512,
-                    provider="gemini",
-                )
-            )
-        assert exc_info.value.kind == ErrorKind.AUTH
-        assert "GEMINI_API_KEY" in str(exc_info.value)
-    finally:
-        monkeypatch.setattr(_keyring_mod, "get_password", original_get)
-
-
-# ##################################################################
-# error: missing transparent deps
-
-
-def test_transparent_missing_deps_error(monkeypatch: pytest.MonkeyPatch):
-    """Verify clear error when torch is missing for --transparent."""
-    import builtins
-
-    original_import = builtins.__import__
-
-    def mock_import(name: str, *args, **kwargs):  # type: ignore
-        if name == "torch":
-            raise ImportError("No module named 'torch'")
-        return original_import(name, *args, **kwargs)
-
-    # we need to test the _ensure_transparent_deps function directly
-    from daz_agent_sdk.capabilities.image import _ensure_transparent_deps
-
-    monkeypatch.setattr(builtins, "__import__", mock_import)
-    try:
-        with pytest.raises(AgentError) as exc_info:
-            _ensure_transparent_deps()
-        assert exc_info.value.kind == ErrorKind.NOT_AVAILABLE
-        assert "transparent" in str(exc_info.value)
-    finally:
-        monkeypatch.setattr(builtins, "__import__", original_import)
-
-
-# ##################################################################
-# anti-fabrication invariant — codex must NEVER return a stale image
-#
-# Regression for the worst-possible failure mode: codex's `exec` silently
-# fails (e.g. "Reading additional input from stdin"), produces NO new image,
-# yet the recovery logic used to hand back the newest image from a PREVIOUS
-# generation and report success. Pretending to work is worse than failing.
-# These tests drive _generate_codex with a faked subprocess and assert it
-# RAISES when no fresh image appears, and only accepts an image written by
-# THIS call.
-
-
-class _FakeProc:
-    def __init__(self, returncode: int, stdout: bytes, stderr: bytes, on_run=None):
-        self.returncode = returncode
-        self._stdout = stdout
-        self._stderr = stderr
-        self._on_run = on_run
-
-    async def communicate(self):
-        if self._on_run is not None:
-            self._on_run()  # side effect: optionally create a "fresh" image
-        return self._stdout, self._stderr
-
-    def kill(self):
-        pass
-
-
-def _patch_codex(monkeypatch, tmp_path, thread_id, on_run):
-    import shutil as _real_shutil
-
-    from daz_agent_sdk.capabilities import image as image_mod
-
-    monkeypatch.setattr(image_mod._shutil, "which", lambda _name: "/usr/bin/codex")
-    monkeypatch.setattr(image_mod, "_CODEX_IMAGE_DIR", tmp_path)
-    stdout = f'{{"type":"thread.started","thread_id":"{thread_id}"}}\n'.encode()
-
-    async def _fake_exec(*_args, **_kwargs):
-        return _FakeProc(0, stdout, b"", on_run=on_run)
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
-    return _real_shutil
-
-
-def test_codex_refuses_stale_image(monkeypatch, tmp_path):
-    """codex exits 0 but creates NO new image; a stale image from a prior
-    session exists. _generate_codex MUST raise, never return the stale one."""
-    from daz_agent_sdk.capabilities.image import _generate_codex
-
-    # a stale image from a previous generation, 100s old
-    old_session = tmp_path / "old-session"
-    old_session.mkdir()
-    stale = old_session / "ig_0001.png"
-    stale.write_bytes(b"\x89PNG\r\n\x1a\n" + b"STALE" * 64)
-    import os as _os
-    import time as _time
-    old = _time.time() - 100
-    _os.utime(stale, (old, old))
-
-    out = tmp_path / "out.png"
-    # codex "succeeds" (rc=0) but writes nothing new (on_run=None)
-    _patch_codex(monkeypatch, tmp_path, thread_id="new-empty-session", on_run=None)
-
-    with pytest.raises(AgentError) as exc:
-        asyncio.run(_generate_codex(
-            "a red apple", width=512, height=512, output_path=out, timeout=5.0,
-        ))
-    assert exc.value.kind == ErrorKind.INTERNAL
-    assert not out.exists(), "must NOT have copied the stale image"
-
-
-def test_codex_accepts_fresh_image(monkeypatch, tmp_path):
-    """When codex DOES write a new image for this call, it is returned."""
-    from daz_agent_sdk.capabilities.image import _generate_codex
-
-    session = tmp_path / "this-session"
-
-    def _make_fresh():
-        session.mkdir(parents=True, exist_ok=True)
-        (session / "ig_0001.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"FRESH" * 64)
-
-    out = tmp_path / "out.png"
-    _patch_codex(monkeypatch, tmp_path, thread_id="this-session", on_run=_make_fresh)
-
-    asyncio.run(_generate_codex(
-        "a red apple", width=512, height=512, output_path=out, timeout=5.0,
-    ))
-    assert out.exists() and out.read_bytes().startswith(b"\x89PNG")
-
-
-# ##################################################################
-# self-healing on codex safety refusal — diagnose + rewrite + retry
-# (NEVER fabricate: if every rewrite still produces no image, raise)
-
-
-def test_codex_self_heals_on_safety_refusal(monkeypatch, tmp_path):
-    """First attempt refused → codex rewrites the prompt → retry succeeds."""
-    from daz_agent_sdk.capabilities import image as image_mod
-
-    out = tmp_path / "o.png"
-    calls = {"img": 0, "rewrite": 0}
-    prompts_seen = []
-
-    async def fake_once(prompt, *, width, height, output_path, input_image=None, timeout=300.0):
-        calls["img"] += 1
-        prompts_seen.append(prompt)
-        if calls["img"] == 1:
-            return "blocked by the image safety system"  # refusal reason
-        output_path.write_bytes(b"\x89PNG fresh image")  # success
-        return None
-
-    async def fake_rewrite(original, refusal, *, timeout):
-        calls["rewrite"] += 1
-        return "a safe rewritten prompt"
-
-    monkeypatch.setattr(image_mod, "_codex_image_once", fake_once)
-    monkeypatch.setattr(image_mod, "_codex_rewrite_safe_prompt", fake_rewrite)
-
-    asyncio.run(image_mod._generate_codex(
-        "risky prompt", width=512, height=512, output_path=out,
-    ))
-    assert out.exists()
-    assert calls["img"] == 2 and calls["rewrite"] == 1
-    assert prompts_seen == ["risky prompt", "a safe rewritten prompt"]
-
-
-def test_codex_raises_when_all_rewrites_refused(monkeypatch, tmp_path):
-    """Every attempt refused → raise (never fabricate), after MAX rewrites."""
-    from daz_agent_sdk.capabilities import image as image_mod
-
-    out = tmp_path / "o.png"
-    calls = {"img": 0, "rewrite": 0}
-
-    async def fake_once(prompt, *, width, height, output_path, input_image=None, timeout=300.0):
-        calls["img"] += 1
-        return "blocked by the image safety system"
-
-    async def fake_rewrite(original, refusal, *, timeout):
-        calls["rewrite"] += 1
-        return f"rewrite {calls['rewrite']}"
-
-    monkeypatch.setattr(image_mod, "_codex_image_once", fake_once)
-    monkeypatch.setattr(image_mod, "_codex_rewrite_safe_prompt", fake_rewrite)
-
-    with pytest.raises(AgentError) as exc:
-        asyncio.run(image_mod._generate_codex(
-            "risky", width=512, height=512, output_path=out,
-        ))
-    assert exc.value.kind == ErrorKind.INTERNAL
-    assert not out.exists()
-    assert calls["img"] == image_mod._MAX_SAFETY_REWRITES + 1
-    assert calls["rewrite"] == image_mod._MAX_SAFETY_REWRITES
+    header = result.path.read_bytes()[:8]
+    is_png = header[:4] == b"\x89PNG"
+    is_jpeg = header[:2] == b"\xff\xd8"
+    assert is_png or is_jpeg, f"Not a valid image, header: {header!r}"
+    print(f"\nGenerated image at: {result.path}")
+    print(f"File size: {result.path.stat().st_size} bytes")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from typing import Any
 from daz_agent_sdk.config import Config, get_tier_chain, load_config
 from daz_agent_sdk.providers.base import Provider
 from daz_agent_sdk.types import Capability, ModelInfo, Tier
@@ -54,17 +55,18 @@ def _load_provider(name: str) -> Provider | None:
                     break
         if cls is None:
             return None
+        provider_class: Any = cls
         # pass base_url from config if the provider accepts it
         try:
             cfg = load_config()
             provider_cfg = cfg.providers.get(name, {})
             base_url = provider_cfg.get("base_url")
             if base_url is not None:
-                instance = cls(base_url=base_url)
+                instance = provider_class(base_url=base_url)
             else:
-                instance = cls()
+                instance = provider_class()
         except TypeError:
-            instance = cls()
+            instance = provider_class()
         return instance
     except Exception:
         return None

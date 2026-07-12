@@ -280,7 +280,9 @@ func TestConversation_BuildChain_Override(t *testing.T) {
 }
 
 func TestConversation_BuildChain_TierDefault(t *testing.T) {
-	conv := NewConversation("chain-test")
+	cfg := &Config{}
+	cfg.applyDefaults()
+	conv := NewConversation("chain-test", WithConfig(cfg))
 	defer conv.Close()
 
 	chain := conv.buildChain(TierFreeFast, "", "")

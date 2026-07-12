@@ -251,7 +251,7 @@ def parse_json_from_llm(text: str) -> Any:
 #      CharactersList {"characters": [...]} request answered with a single
 #      character object, which previously failed the whole call.
 # raises pydantic.ValidationError if nothing validates.
-def validate_structured_json(schema: type[BaseModel], parsed_json: Any) -> BaseModel:
+def validate_structured_json(schema: type[T], parsed_json: Any) -> T:
     from typing import get_args, get_origin
 
     # quirk 1: schema echo

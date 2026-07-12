@@ -155,7 +155,7 @@ class GeminiProvider(Provider):
         max_turns: int = 1,
         max_tokens: int | None = None,
         timeout: float = 300.0,
-        setting_sources: list[str] | None = None,  # noqa: ARG002 - claude-only lean-env knob
+        setting_sources: list[str] | tuple[str, ...] | None = None,  # noqa: ARG002 - claude-only lean-env knob
     ) -> Response | StructuredResponse:
         if shutil.which("gemini") is None:
             raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)

@@ -64,7 +64,9 @@ class InProcessProvider(Provider):
         tools=None,
         cwd=None,
         max_turns: int = 1,
+        max_tokens: int | None = None,
         timeout: float = 120.0,
+        setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:
         text = self._next_response()
         conv_id = uuid4()
