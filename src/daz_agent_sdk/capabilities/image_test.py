@@ -29,12 +29,12 @@ def _service_reachable() -> bool:
     from urllib.request import urlopen
     from urllib.error import URLError
     try:
-        with urlopen(image_module._IMAGE_SERVICE_URL + "/jobs", timeout=3):
+        with urlopen(image_module._image_service_url() + "/jobs", timeout=3):
             return True
     except (URLError, OSError):
         # A 404/405 still means the service is up — only connection errors count.
         try:
-            with urlopen(image_module._IMAGE_SERVICE_URL, timeout=3):
+            with urlopen(image_module._image_service_url(), timeout=3):
                 return True
         except (URLError, OSError):
             return False
@@ -44,6 +44,12 @@ def _service_reachable() -> bool:
 
 # ##################################################################
 # provider validation
+
+
+def test_image_service_uses_loopback_on_macmini_and_lan_everywhere_else():
+    assert image_module._image_service_url("macmini") == "http://127.0.0.1:8830"
+    assert image_module._image_service_url("macmini.local") == "http://127.0.0.1:8830"
+    assert image_module._image_service_url("Darrens-MBP") == "http://10.0.0.46:8830"
 
 
 def test_rejects_unknown_provider():

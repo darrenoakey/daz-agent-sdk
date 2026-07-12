@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import socket
 import tempfile
 import uuid
 from pathlib import Path
@@ -32,6 +33,13 @@ _CODEX_MODEL = ModelInfo(
 )
 
 _IMAGE_SERVICE_URL = "http://10.0.0.46:8830"
+_LOCAL_IMAGE_SERVICE_URL = "http://127.0.0.1:8830"
+
+
+def _image_service_url(hostname: str | None = None) -> str:
+    """Use loopback when the caller is running on the image-service host."""
+    machine = (hostname if hostname is not None else socket.gethostname()).split(".", 1)[0].lower()
+    return _LOCAL_IMAGE_SERVICE_URL if machine == "macmini" else _IMAGE_SERVICE_URL
 
 
 # ##################################################################
@@ -124,8 +132,9 @@ async def _service_json(
     path: str,
     *,
     payload: dict[str, Any] | None = None,
+    base_url: str | None = None,
 ) -> dict[str, Any]:
-    async with session.request(method, _IMAGE_SERVICE_URL + path, json=payload) as response:
+    async with session.request(method, (base_url or _image_service_url()) + path, json=payload) as response:
         text = await response.text()
         if response.status >= 400:
             raise AgentError(
@@ -147,8 +156,8 @@ async def _service_json(
         return data
 
 
-async def _service_image(session: aiohttp.ClientSession, path: str) -> bytes:
-    async with session.get(_IMAGE_SERVICE_URL + path) as response:
+async def _service_image(session: aiohttp.ClientSession, path: str, *, base_url: str | None = None) -> bytes:
+    async with session.get((base_url or _image_service_url()) + path) as response:
         data = await response.read()
         if response.status >= 400:
             raise AgentError(
@@ -217,8 +226,9 @@ async def _generate_igs(
 
     deadline = asyncio.get_running_loop().time() + timeout
     client_timeout = aiohttp.ClientTimeout(total=60)
+    service_url = _image_service_url()
     async with aiohttp.ClientSession(timeout=client_timeout) as session:
-        created = await _service_json(session, "POST", "/jobs", payload=payload)
+        created = await _service_json(session, "POST", "/jobs", payload=payload, base_url=service_url)
         job_id = str(created.get("id", "")).strip()
         if not job_id:
             raise AgentError(
@@ -227,7 +237,7 @@ async def _generate_igs(
             )
 
         while True:
-            status = await _service_json(session, "GET", f"/jobs/{job_id}")
+            status = await _service_json(session, "GET", f"/jobs/{job_id}", base_url=service_url)
             state = status.get("status")
             if state == "done":
                 break
@@ -249,7 +259,7 @@ async def _generate_igs(
                 )
             await asyncio.sleep(2)
 
-        image_data = await _service_image(session, f"/jobs/{job_id}/image")
+        image_data = await _service_image(session, f"/jobs/{job_id}/image", base_url=service_url)
     _write_service_image(image_data, output_path, transparent)
 
 

@@ -195,7 +195,7 @@ func TestAgent_AskOllama(t *testing.T) {
 	resp, err := agent.Ask(ctx, "Say hello in exactly one word.",
 		WithAskTier(TierFreeFast),
 		WithAskProvider("ollama"),
-		WithAskModel("qwen3-8b"),
+		WithAskModel("qwen3:8b"),
 	)
 	if err != nil {
 		t.Fatalf("Ask() error: %v", err)

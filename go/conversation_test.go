@@ -166,7 +166,7 @@ func TestConversation_SayOllama(t *testing.T) {
 	conv := NewConversation("ollama-test",
 		WithTier(TierFreeFast),
 		WithProvider("ollama"),
-		WithModel("qwen3-8b"),
+		WithModel("qwen3:8b"),
 	)
 	defer conv.Close()
 

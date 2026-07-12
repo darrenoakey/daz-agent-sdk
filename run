@@ -77,10 +77,21 @@ else:
         import time
         print("Waiting for PyPI to index the new version...")
         time.sleep(30)
-        subprocess.run(
-            ["pip", "install", "--upgrade", f"daz-agent-sdk=={new_ver}"],
-            check=False,
-        )
+        installed = False
+        for attempt in range(1, 13):
+            result = subprocess.run(
+                ["pip", "install", "--upgrade", f"daz-agent-sdk=={new_ver}"],
+                check=False,
+            )
+            if result.returncode == 0:
+                installed = True
+                break
+            if attempt < 12:
+                print(f"PyPI has not indexed {new_ver} yet; retrying in 5 seconds ({attempt}/12)...")
+                time.sleep(5)
+        if not installed:
+            print(f"ERROR: Published daz-agent-sdk {new_ver}, but could not install it from PyPI")
+            sys.exit(1)
         print(f"Installed daz-agent-sdk {new_ver} globally")
         sys.exit(0)
 
