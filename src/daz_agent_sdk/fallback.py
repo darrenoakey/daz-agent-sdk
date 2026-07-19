@@ -10,7 +10,7 @@ from daz_agent_sdk.types import AgentError, ErrorKind
 # ##################################################################
 # event logger protocol
 # structural typing for any object that has a log_event method —
-# allows ConversationLogger and test fakes to satisfy the same interface.
+# allows ConversationLogger and recording test loggers to share one interface.
 class EventLogger(Protocol):
     def log_event(self, event_type: str, **kwargs: Any) -> None: ...
 
@@ -146,9 +146,10 @@ async def execute_with_fallback(
     attempts: list[dict[str, Any]] = []
 
     for index, provider_entry in enumerate(providers_chain):
-
         if logger is not None:
-            logger.log_event("attempt_start", provider=provider_entry, tier=tier, attempt_index=index)
+            logger.log_event(
+                "attempt_start", provider=provider_entry, tier=tier, attempt_index=index
+            )
 
         # conversation mode: exponential backoff before each cascade
         if is_conversation and index > 0:
@@ -249,7 +250,9 @@ async def execute_with_fallback(
     if logger is not None:
         logger.log_event("all_failed", tier=tier, attempts=len(attempts))
 
-    lines = [f"All providers in chain failed for tier '{tier}' after {len(attempts)} attempt(s):"]
+    lines = [
+        f"All providers in chain failed for tier '{tier}' after {len(attempts)} attempt(s):"
+    ]
     for a in attempts:
         status = "ok" if a.get("success") else a.get("kind", "unknown")
         retry_info = f" retry={a['retry']}" if a.get("retry", 0) > 0 else ""

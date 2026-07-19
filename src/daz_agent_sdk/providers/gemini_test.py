@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import os
+import shutil
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 
-from daz_agent_sdk.providers.gemini import GeminiProvider, _classify_error, _build_prompt
+from daz_agent_sdk.providers.gemini import (
+    GeminiProvider,
+    _classify_error,
+    _build_prompt,
+    _find_gemini_cli,
+)
 from daz_agent_sdk.types import (
     ErrorKind,
     Message,
@@ -16,7 +26,9 @@ from daz_agent_sdk.types import (
 # ##################################################################
 # classify error — unit tests
 def test_classify_rate_limit() -> None:
-    assert _classify_error(Exception("HTTP 429 Too Many Requests")) == ErrorKind.RATE_LIMIT
+    assert (
+        _classify_error(Exception("HTTP 429 Too Many Requests")) == ErrorKind.RATE_LIMIT
+    )
     assert _classify_error(Exception("quota exceeded")) == ErrorKind.RATE_LIMIT
     assert _classify_error(Exception("resource_exhausted")) == ErrorKind.RATE_LIMIT
     assert _classify_error(Exception("rate limit hit")) == ErrorKind.RATE_LIMIT
@@ -35,7 +47,10 @@ def test_classify_timeout() -> None:
 
 
 def test_classify_invalid() -> None:
-    assert _classify_error(Exception("400 bad request invalid input")) == ErrorKind.INVALID_REQUEST
+    assert (
+        _classify_error(Exception("400 bad request invalid input"))
+        == ErrorKind.INVALID_REQUEST
+    )
     assert _classify_error(Exception("invalid argument")) == ErrorKind.INVALID_REQUEST
 
 
@@ -89,6 +104,12 @@ def test_provider_name() -> None:
     assert provider.name == "gemini"
 
 
+def test_find_gemini_cli_outside_path() -> None:
+    restricted_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert shutil.which("gemini", path=restricted_path) is None
+    assert _find_gemini_cli(restricted_path) == "/opt/homebrew/bin/gemini"
+
+
 @pytest.mark.asyncio
 async def test_available_returns_bool() -> None:
     provider = GeminiProvider()
@@ -109,55 +130,54 @@ async def test_list_models() -> None:
     assert "gemini-2.5-flash-lite" in ids
 
 
-@pytest.mark.asyncio
-async def test_generate_image_raises() -> None:
-    from pathlib import Path
-    provider = GeminiProvider()
-    with pytest.raises(NotImplementedError):
-        await provider.generate_image("test", width=512, height=512, output=Path("/tmp/test.jpg"))
-
-
 # ##################################################################
-# integration tests — call real gemini CLI. these skip when the CLI cannot
-# authenticate (google retired the individual Code Assist tier; accounts that
-# have not migrated to Antigravity fail every call with IneligibleTierError —
-# an unreachable backend, per the same skip convention as the other providers).
-_AUTH_PROBE: dict = {}
+# integration tests — execute the real subprocess protocol through a local CLI.
+@pytest.fixture
+def gemini_cli(tmp_path: Path) -> Iterator[Path]:
+    executable = tmp_path / "gemini"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
 
-
-async def _gemini_usable() -> bool:
-    if "ok" not in _AUTH_PROBE:
-        provider = GeminiProvider()
-        try:
-            models = await provider.list_models()
-            flash_lite = next(m for m in models if m.tier == Tier.LOW)
-            messages = [Message(role="user", content="Reply with the word ok")]
-            await provider.complete(messages, flash_lite, timeout=30.0)
-            _AUTH_PROBE["ok"] = True
-        except Exception as exc:
-            _AUTH_PROBE["ok"] = False
-            _AUTH_PROBE["why"] = str(exc)[:200]
-    return _AUTH_PROBE["ok"]
+prompt = sys.stdin.read()
+output_format = sys.argv[sys.argv.index("-o") + 1]
+if output_format == "stream-json":
+    print(json.dumps({"type": "message", "role": "assistant", "content": "4"}))
+    print(json.dumps({"type": "result", "status": "success"}))
+else:
+    response = '{"answer":15}' if '10 + 5' in prompt else "4"
+    print(json.dumps({"response": response, "stats": {}}))
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    original_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = f"{tmp_path}{os.pathsep}{original_path}"
+    try:
+        yield executable
+    finally:
+        os.environ["PATH"] = original_path
 
 
 @pytest.mark.asyncio
-async def test_complete_simple() -> None:
-    if not await _gemini_usable():
-        pytest.skip(f"gemini CLI unusable: {_AUTH_PROBE.get('why', 'auth failed')}")
+async def test_complete_simple(gemini_cli: Path) -> None:
+    assert gemini_cli.is_file()
     provider = GeminiProvider()
     models = await provider.list_models()
     flash_lite = next(m for m in models if m.tier == Tier.LOW)
-    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
+    messages = [
+        Message(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     result = await provider.complete(messages, flash_lite, timeout=30.0)
     assert isinstance(result, Response)
     assert "4" in result.text
 
 
 @pytest.mark.asyncio
-async def test_complete_structured() -> None:
+async def test_complete_structured(gemini_cli: Path) -> None:
     """Structured output via file-based extraction — gemini returns text, SDK parses it."""
-    if not await _gemini_usable():
-        pytest.skip(f"gemini CLI unusable: {_AUTH_PROBE.get('why', 'auth failed')}")
+    assert gemini_cli.is_file()
     from pydantic import BaseModel
 
     class MathResult(BaseModel):
@@ -167,19 +187,22 @@ async def test_complete_structured() -> None:
     models = await provider.list_models()
     flash_lite = next(m for m in models if m.tier == Tier.LOW)
     messages = [Message(role="user", content="What is 10 + 5?")]
-    result = await provider.complete(messages, flash_lite, schema=MathResult, timeout=60.0)
+    result = await provider.complete(
+        messages, flash_lite, schema=MathResult, timeout=60.0
+    )
     assert isinstance(result, StructuredResponse)
     assert result.parsed.answer == 15
 
 
 @pytest.mark.asyncio
-async def test_stream_simple() -> None:
-    if not await _gemini_usable():
-        pytest.skip(f"gemini CLI unusable: {_AUTH_PROBE.get('why', 'auth failed')}")
+async def test_stream_simple(gemini_cli: Path) -> None:
+    assert gemini_cli.is_file()
     provider = GeminiProvider()
     models = await provider.list_models()
     flash_lite = next(m for m in models if m.tier == Tier.LOW)
-    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
+    messages = [
+        Message(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     chunks: list[str] = []
     async for chunk in provider.stream(messages, flash_lite, timeout=30.0):
         chunks.append(chunk)

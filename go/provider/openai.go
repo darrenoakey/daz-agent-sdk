@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -25,7 +24,7 @@ var openAIModels = []sdk.ModelInfo{
 		DisplayName:          "GPT-4.1",
 		Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured},
 		Tier:                 sdk.TierHigh,
-		SupportsStreaming:     true,
+		SupportsStreaming:    true,
 		SupportsStructured:   true,
 		SupportsConversation: true,
 		SupportsTools:        true,
@@ -36,7 +35,7 @@ var openAIModels = []sdk.ModelInfo{
 		DisplayName:          "GPT-4.1 Mini",
 		Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured},
 		Tier:                 sdk.TierMedium,
-		SupportsStreaming:     true,
+		SupportsStreaming:    true,
 		SupportsStructured:   true,
 		SupportsConversation: true,
 		SupportsTools:        true,
@@ -47,7 +46,7 @@ var openAIModels = []sdk.ModelInfo{
 		DisplayName:          "GPT-4.1 Nano",
 		Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured},
 		Tier:                 sdk.TierLow,
-		SupportsStreaming:     true,
+		SupportsStreaming:    true,
 		SupportsStructured:   true,
 		SupportsConversation: true,
 		SupportsTools:        true,
@@ -58,15 +57,17 @@ var openAIModels = []sdk.ModelInfo{
 		DisplayName:          "O4 Mini",
 		Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured},
 		Tier:                 sdk.TierMedium,
-		SupportsStreaming:     true,
+		SupportsStreaming:    true,
 		SupportsStructured:   true,
 		SupportsConversation: true,
 		SupportsTools:        true,
 	},
 }
 
+var openAICredential = credentialReference{service: "openai", account: "api-key"}
+
 // OpenAIProvider calls the OpenAI Chat Completions API using the official Go SDK.
-// Authentication is via OPENAI_API_KEY environment variable (read automatically by the SDK).
+// Authentication comes from the current user's macOS Keychain.
 type OpenAIProvider struct{}
 
 // NewOpenAIProvider returns a new OpenAIProvider.
@@ -79,21 +80,32 @@ func (o *OpenAIProvider) Name() string {
 	return "openai"
 }
 
-// Available returns true when OPENAI_API_KEY is set and the API responds.
+// Available returns true when the configured credential exists and the API responds.
 // Returns false (not an error) when the key is absent or the API is unreachable.
 func (o *OpenAIProvider) Available(ctx context.Context) (bool, error) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
+	client, err := newOpenAIClient(ctx)
+	if err != nil {
 		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	client := openai.NewClient(option.WithMaxRetries(0))
-	_, err := client.Models.List(ctx)
+	_, err = client.Models.List(ctx)
 	if err != nil {
 		return false, nil
 	}
 	return true, nil
+}
+
+func newOpenAIClient(ctx context.Context) (openai.Client, error) {
+	credentialContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	key, err := readCredential(credentialContext, openAICredential)
+	if err != nil {
+		message := fmt.Sprintf("OpenAI credential unavailable: %v", err)
+		return openai.Client{}, sdk.NewAgentError(message, sdk.ErrorAuth, nil)
+	}
+	return openai.NewClient(option.WithAPIKey(key), option.WithMaxRetries(0)), nil
 }
 
 // ListModels returns the static OpenAI model catalog.
@@ -152,16 +164,16 @@ func classifyOpenAIError(err error) sdk.ErrorKind {
 
 // classifyOpenAIStatusCode maps HTTP status codes to ErrorKind values.
 func classifyOpenAIStatusCode(statusCode int) sdk.ErrorKind {
-	switch {
-	case statusCode == 429:
+	switch statusCode {
+	case 429:
 		return sdk.ErrorRateLimit
-	case statusCode == 401 || statusCode == 403:
+	case 401, 403:
 		return sdk.ErrorAuth
-	case statusCode == 408:
+	case 408:
 		return sdk.ErrorTimeout
-	case statusCode == 400 || statusCode == 422:
+	case 400, 422:
 		return sdk.ErrorInvalidRequest
-	case statusCode == 503:
+	case 503:
 		return sdk.ErrorNotAvailable
 	default:
 		return sdk.ErrorInternal
@@ -171,13 +183,6 @@ func classifyOpenAIStatusCode(statusCode int) sdk.ErrorKind {
 // Complete sends messages to the OpenAI API and returns a full response.
 // When opts.Schema is non-nil it is sent as the JSON schema response format.
 func (o *OpenAIProvider) Complete(ctx context.Context, messages []sdk.Message, model sdk.ModelInfo, opts sdk.CompleteOpts) (*sdk.Response, error) {
-	timeout := opts.Timeout
-	if timeout <= 0 {
-		timeout = 300.0
-	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout*float64(time.Second)))
-	defer cancel()
-
 	msgParams := buildOpenAIMessages(messages)
 	if len(msgParams) == 0 {
 		return nil, sdk.NewAgentError("no messages provided", sdk.ErrorInvalidRequest, nil)
@@ -205,7 +210,13 @@ func (o *OpenAIProvider) Complete(ctx context.Context, messages []sdk.Message, m
 		}
 	}
 
-	client := openai.NewClient(option.WithMaxRetries(0))
+	client, err := newOpenAIClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	timeout := completeTimeout(opts.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	resp, err := client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		kind := classifyOpenAIError(err)
@@ -232,15 +243,8 @@ func (o *OpenAIProvider) Complete(ctx context.Context, messages []sdk.Message, m
 
 // Stream sends messages to the OpenAI API and returns a channel of text chunks.
 func (o *OpenAIProvider) Stream(ctx context.Context, messages []sdk.Message, model sdk.ModelInfo, opts sdk.StreamOpts) (<-chan sdk.StreamChunk, error) {
-	timeout := opts.Timeout
-	if timeout <= 0 {
-		timeout = 300.0
-	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout*float64(time.Second)))
-
 	msgParams := buildOpenAIMessages(messages)
 	if len(msgParams) == 0 {
-		cancel()
 		return nil, sdk.NewAgentError("no messages provided", sdk.ErrorInvalidRequest, nil)
 	}
 
@@ -249,14 +253,22 @@ func (o *OpenAIProvider) Stream(ctx context.Context, messages []sdk.Message, mod
 		Messages: msgParams,
 	}
 
-	client := openai.NewClient(option.WithMaxRetries(0))
+	client, err := newOpenAIClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, completeTimeout(opts.Timeout))
 	stream := client.Chat.Completions.NewStreaming(ctx, params)
 
 	ch := make(chan sdk.StreamChunk)
 	go func() {
 		defer close(ch)
 		defer cancel()
-		defer stream.Close()
+		defer func() {
+			if err := stream.Close(); err != nil {
+				ch <- sdk.StreamChunk{Err: fmt.Errorf("closing openai stream: %w", err)}
+			}
+		}()
 
 		for stream.Next() {
 			chunk := stream.Current()
@@ -274,6 +286,13 @@ func (o *OpenAIProvider) Stream(ctx context.Context, messages []sdk.Message, mod
 	}()
 
 	return ch, nil
+}
+
+func completeTimeout(seconds float64) time.Duration {
+	if seconds <= 0 {
+		seconds = 300.0
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 // Compile-time check that OpenAIProvider satisfies Provider.

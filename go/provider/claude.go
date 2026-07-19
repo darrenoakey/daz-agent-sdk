@@ -133,11 +133,11 @@ type claudeStreamMessage struct {
 	Role    string              `json:"role,omitempty"`
 	Content []claudeContentItem `json:"content,omitempty"`
 	// For result messages
-	Result          *string `json:"result,omitempty"`
-	StopReason      string  `json:"stop_reason,omitempty"`
-	TotalCostUSD    float64 `json:"total_cost_usd,omitempty"`
-	IsError         bool    `json:"is_error,omitempty"`
-	StructuredOutput any    `json:"structured_output,omitempty"`
+	Result           *string `json:"result,omitempty"`
+	StopReason       string  `json:"stop_reason,omitempty"`
+	TotalCostUSD     float64 `json:"total_cost_usd,omitempty"`
+	IsError          bool    `json:"is_error,omitempty"`
+	StructuredOutput any     `json:"structured_output,omitempty"`
 	// Usage
 	Usage map[string]any `json:"usage,omitempty"`
 }
@@ -208,12 +208,14 @@ func (c *ClaudeProvider) Complete(ctx context.Context, messages []sdk.Message, m
 		args = append(args, "--model", model.ModelID)
 	}
 	args = append(args, "--permission-mode", c.permissionMode)
-	args = append(args, "--max-turns", "1")
-
-	if opts.MaxTurns > 0 {
-		// Override max-turns
-		args[len(args)-1] = fmt.Sprint(opts.MaxTurns)
+	maxTurns := opts.MaxTurns
+	if maxTurns < 1 {
+		maxTurns = 1
 	}
+	if opts.Schema != nil && maxTurns < 2 {
+		maxTurns = 2
+	}
+	args = append(args, "--max-turns", fmt.Sprint(maxTurns))
 
 	// Structured output via --json-schema
 	if opts.Schema != nil {
@@ -242,6 +244,9 @@ func (c *ClaudeProvider) Complete(ctx context.Context, messages []sdk.Message, m
 			)
 		}
 		errMsg := stderr.String()
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(stdout.String())
+		}
 		if errMsg == "" {
 			errMsg = err.Error()
 		}
@@ -355,7 +360,11 @@ func (c *ClaudeProvider) Stream(ctx context.Context, messages []sdk.Message, mod
 	go func() {
 		defer close(ch)
 		defer cancel()
-		defer cmd.Wait() //nolint:errcheck
+		defer func() {
+			if err := cmd.Wait(); err != nil {
+				ch <- sdk.StreamChunk{Err: fmt.Errorf("waiting for claude CLI: %w", err)}
+			}
+		}()
 
 		scanner := bufio.NewScanner(stdoutPipe)
 		for scanner.Scan() {

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import socket
+import json
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-import pytest_asyncio  # noqa: F401 — registers asyncio mode
 
 from daz_agent_sdk.providers.ollama import OllamaProvider, _tier_from_param_size
 from daz_agent_sdk.types import (
@@ -19,73 +21,91 @@ from daz_agent_sdk.types import (
 from pydantic import BaseModel
 
 
-# ##################################################################
-# ollama reachability check
-# probe at module level so tests skip quickly when ollama is offline.
-# avoids per-test try/except noise.
-def _ollama_reachable() -> bool:
+TEST_MODEL_ID = "local-protocol:latest"
+
+
+class _OllamaProtocolHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path != "/api/tags":
+            self.send_error(404)
+            return
+        self._send_json(
+            {
+                "models": [
+                    {
+                        "name": TEST_MODEL_ID,
+                        "details": {"parameter_size": "3.8B"},
+                        "capabilities": ["completion"],
+                    }
+                ]
+            }
+        )
+
+    def do_POST(self) -> None:
+        if self.path != "/api/chat":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        request = json.loads(self.rfile.read(length))
+        content = self._content(request)
+        if request.get("stream"):
+            body = (
+                json.dumps({"message": {"role": "assistant", "content": content}})
+                + "\n"
+                + json.dumps({"done": True})
+                + "\n"
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self._send_json({"message": {"role": "assistant", "content": content}})
+
+    def _content(self, request: dict) -> str:
+        schema = request.get("format") or {}
+        properties = schema.get("properties", {})
+        if "result" in properties:
+            return json.dumps({"result": 21, "explanation": "three times seven"})
+        if "label" in properties:
+            return json.dumps({"label": "positive", "confidence": 0.99})
+        prompt = " ".join(message.get("content", "") for message in request["messages"])
+        if "capital of France" in prompt:
+            return "Paris"
+        if "10 divided by 2" in prompt:
+            return "5"
+        if "Count from 1 to 5" in prompt:
+            return "1\n2\n3\n4\n5"
+        if "hello" in prompt.lower():
+            return "hello"
+        return "4"
+
+    def _send_json(self, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@pytest.fixture
+def ollama_endpoint() -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _OllamaProtocolHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
     try:
-        s = socket.create_connection(("localhost", 11434), timeout=2)
-        s.close()
-        return True
-    except OSError:
-        return False
-
-
-OLLAMA_RUNNING = _ollama_reachable()
-skip_if_no_ollama = pytest.mark.skipif(not OLLAMA_RUNNING, reason="Ollama not running on localhost:11434")
-
-# ##################################################################
-# test model selection
-# prefer a model already loaded in Ollama VRAM (instant response).
-# falls back to the first listed model if nothing is warm.
-# raises a clear error if no models are available at all.
-# ##################################################################
-# vision-only models
-# models that cannot do text chat — skip them when picking a test model
-_VISION_ONLY = {"moondream", "llava", "bakllava"}
-
-
-# ##################################################################
-# is text capable
-# returns True if the model name is not a known vision-only model
-def _is_text_capable(name: str) -> bool:
-    base = name.split(":")[0].lower()
-    return base not in _VISION_ONLY
-
-
-def _pick_test_model() -> str:
-    if not OLLAMA_RUNNING:
-        return "phi3:latest"
-    import urllib.request
-    import json as _json
-
-    # prefer a warm text model
-    try:
-        with urllib.request.urlopen("http://localhost:11434/api/ps", timeout=3) as r:
-            ps = _json.loads(r.read())
-            warm = ps.get("models", [])
-            for m in warm:
-                if _is_text_capable(m["name"]):
-                    return m["name"]
-    except Exception:
-        pass
-
-    # fall back to any installed text model
-    try:
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
-            tags = _json.loads(r.read())
-            models = tags.get("models", [])
-            for m in models:
-                if _is_text_capable(m.get("name", "")):
-                    return m["name"]
-    except Exception:
-        pass
-
-    return "phi3:latest"
-
-
-TEST_MODEL_ID = _pick_test_model()
+        host = str(server.server_address[0])
+        port = int(server.server_address[1])
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 # ##################################################################
@@ -131,10 +151,9 @@ def test_tier_from_param_size_unknown() -> None:
 
 # ##################################################################
 # available — online tests
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_available_returns_true() -> None:
-    provider = OllamaProvider()
+async def test_available_returns_true(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
     result = await provider.available()
     assert result is True
 
@@ -148,25 +167,27 @@ async def test_available_wrong_port_returns_false() -> None:
 
 # ##################################################################
 # list models — online tests
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_list_models_returns_model_info_instances() -> None:
-    provider = OllamaProvider()
+async def test_list_models_returns_model_info_instances(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
     models = await provider.list_models()
     assert len(models) > 0
     for m in models:
         assert isinstance(m, ModelInfo)
         assert m.provider == "ollama"
         assert m.model_id != ""
-        assert Capability.TEXT in m.capabilities
-        assert Capability.STRUCTURED in m.capabilities
+        if Capability.EMBEDDING in m.capabilities:
+            assert Capability.TEXT not in m.capabilities
+            assert m.supports_streaming is False
+        else:
+            assert Capability.TEXT in m.capabilities
+            assert Capability.STRUCTURED in m.capabilities
         assert isinstance(m.tier, Tier)
 
 
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_list_models_tiers_assigned() -> None:
-    provider = OllamaProvider()
+async def test_list_models_tiers_assigned(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
     models = await provider.list_models()
     tiers = {m.tier for m in models}
     # should have at least FREE_FAST since we have small models
@@ -184,11 +205,12 @@ async def test_list_models_wrong_port_returns_empty() -> None:
 # complete — online tests
 # timeouts are generous to allow for model loading from disk/VRAM.
 # on slow machines the first request can take 30+ seconds.
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_complete_simple_prompt() -> None:
-    provider = OllamaProvider()
-    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
+async def test_complete_simple_prompt(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
+    messages = [
+        Message(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     model = _make_model()
     resp = await provider.complete(messages, model, timeout=180.0)
     assert isinstance(resp, Response)
@@ -198,10 +220,9 @@ async def test_complete_simple_prompt() -> None:
     assert resp.turn_id is not None
 
 
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_complete_returns_response_type() -> None:
-    provider = OllamaProvider()
+async def test_complete_returns_response_type(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
     messages = [Message(role="user", content="Say 'hello' and nothing else.")]
     model = _make_model()
     resp = await provider.complete(messages, model, timeout=180.0)
@@ -210,10 +231,9 @@ async def test_complete_returns_response_type() -> None:
     assert resp.text.strip() != ""
 
 
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_complete_with_system_message() -> None:
-    provider = OllamaProvider()
+async def test_complete_with_system_message(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
     messages = [
         Message(role="system", content="You are a terse assistant. Be brief."),
         Message(role="user", content="What is the capital of France?"),
@@ -226,14 +246,13 @@ async def test_complete_with_system_message() -> None:
 
 # ##################################################################
 # structured output — online tests
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_complete_structured_output() -> None:
+async def test_complete_structured_output(ollama_endpoint: str) -> None:
     class MathAnswer(BaseModel):
         result: int
         explanation: str
 
-    provider = OllamaProvider()
+    provider = OllamaProvider(ollama_endpoint)
     messages = [Message(role="user", content="What is 3 multiplied by 7?")]
     model = _make_model()
     resp = await provider.complete(messages, model, schema=MathAnswer, timeout=180.0)
@@ -243,14 +262,13 @@ async def test_complete_structured_output() -> None:
     assert len(resp.parsed.explanation) > 0
 
 
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_complete_structured_with_system_message() -> None:
+async def test_complete_structured_with_system_message(ollama_endpoint: str) -> None:
     class Sentiment(BaseModel):
         label: str
         confidence: float
 
-    provider = OllamaProvider()
+    provider = OllamaProvider(ollama_endpoint)
     messages = [
         Message(role="system", content="You are a sentiment analyser."),
         Message(role="user", content="Classify: 'I love this product!'"),
@@ -265,10 +283,9 @@ async def test_complete_structured_with_system_message() -> None:
 
 # ##################################################################
 # stream — online tests
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_stream_yields_string_chunks() -> None:
-    provider = OllamaProvider()
+async def test_stream_yields_string_chunks(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
     messages = [Message(role="user", content="Count from 1 to 5, one number per line.")]
     model = _make_model()
     chunks: list[str] = []
@@ -280,11 +297,14 @@ async def test_stream_yields_string_chunks() -> None:
     assert full.strip() != ""
 
 
-@skip_if_no_ollama
 @pytest.mark.asyncio
-async def test_stream_produces_complete_response() -> None:
-    provider = OllamaProvider()
-    messages = [Message(role="user", content="What is 10 divided by 2? Reply with just the number.")]
+async def test_stream_produces_complete_response(ollama_endpoint: str) -> None:
+    provider = OllamaProvider(ollama_endpoint)
+    messages = [
+        Message(
+            role="user", content="What is 10 divided by 2? Reply with just the number."
+        )
+    ]
     model = _make_model()
     full = ""
     async for chunk in provider.stream(messages, model, timeout=180.0):

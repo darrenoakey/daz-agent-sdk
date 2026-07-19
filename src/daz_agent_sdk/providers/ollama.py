@@ -116,16 +116,26 @@ class OllamaProvider(Provider):
             display = model_id.split(":")[0].replace("-", " ").replace("_", " ").title()
             if param_size:
                 display = f"{display} ({param_size})"
+            server_capabilities = set(entry.get("capabilities", []))
+            embedding_only = (
+                "embedding" in server_capabilities
+                and "completion" not in server_capabilities
+            )
+            capabilities = (
+                frozenset({Capability.EMBEDDING})
+                if embedding_only
+                else frozenset({Capability.TEXT, Capability.STRUCTURED})
+            )
             models.append(
                 ModelInfo(
                     provider="ollama",
                     model_id=model_id,
                     display_name=display,
-                    capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED}),
+                    capabilities=capabilities,
                     tier=tier,
-                    supports_streaming=True,
-                    supports_structured=True,
-                    supports_conversation=True,
+                    supports_streaming=not embedding_only,
+                    supports_structured=not embedding_only,
+                    supports_conversation=not embedding_only,
                     supports_tools=False,
                 )
             )
@@ -169,7 +179,9 @@ class OllamaProvider(Provider):
                 "Do not include any explanation or markdown. Output raw JSON only."
             )
             # append schema instruction to last system message or add new one
-            system_indices = [i for i, m in enumerate(msg_list) if m["role"] == "system"]
+            system_indices = [
+                i for i, m in enumerate(msg_list) if m["role"] == "system"
+            ]
             if system_indices:
                 last_sys = system_indices[-1]
                 msg_list[last_sys] = {

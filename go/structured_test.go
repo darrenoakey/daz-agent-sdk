@@ -34,7 +34,7 @@ func TestExtractStructured_PlainJSON(t *testing.T) {
 
 func TestExtractStructured_MarkdownFenced(t *testing.T) {
 	resp := &Response{
-		Text: "Here is the result:\n```json\n{\"color\": \"blue\", \"count\": 5}\n```",
+		Text:           "Here is the result:\n```json\n{\"color\": \"blue\", \"count\": 5}\n```",
 		ConversationID: uuid.New(),
 		TurnID:         uuid.New(),
 	}
@@ -59,7 +59,7 @@ func TestExtractStructured_MarkdownFenced(t *testing.T) {
 
 func TestExtractStructured_ProseWithJSON(t *testing.T) {
 	resp := &Response{
-		Text: "Sure! Here is the data you requested.\n\n{\"title\": \"Go Programming\", \"pages\": 350}",
+		Text:           "Sure! Here is the data you requested.\n\n{\"title\": \"Go Programming\", \"pages\": 350}",
 		ConversationID: uuid.New(),
 		TurnID:         uuid.New(),
 	}

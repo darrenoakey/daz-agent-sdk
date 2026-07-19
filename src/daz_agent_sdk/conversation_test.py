@@ -34,7 +34,9 @@ class InProcessProvider(Provider):
     # init
     # configure the provider with a fixed response string and optional
     # per-call response sequence for multi-turn tests
-    def __init__(self, response: str = "ok", responses: list[str] | None = None) -> None:
+    def __init__(
+        self, response: str = "ok", responses: list[str] | None = None
+    ) -> None:
         self._response = response
         self._responses = responses or []
         self._call_count = 0
@@ -108,7 +110,9 @@ class InProcessProvider(Provider):
     # ##################################################################
     # generate image
     # not supported — raises NotImplementedError
-    async def generate_image(self, prompt: str, *, width: int, height: int, output: Path, **kwargs) -> ImageResult:
+    async def generate_image(
+        self, prompt: str, *, width: int, height: int, output: Path, **kwargs
+    ) -> ImageResult:
         raise NotImplementedError("InProcessProvider does not support image generation")
 
     # ##################################################################

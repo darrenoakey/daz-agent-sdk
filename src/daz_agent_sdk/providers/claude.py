@@ -15,7 +15,6 @@ from daz_agent_sdk.types import (
     AgentError,
     Capability,
     ErrorKind,
-    ImageResult,
     Message,
     ModelInfo,
     Response,
@@ -31,7 +30,9 @@ _CLAUDE_MODELS = [
         provider="claude",
         model_id="claude-opus-4-6",
         display_name="Claude Opus 4.6",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
+        capabilities=frozenset(
+            {Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}
+        ),
         tier=Tier.HIGH,
         supports_tools=True,
     ),
@@ -39,7 +40,9 @@ _CLAUDE_MODELS = [
         provider="claude",
         model_id="claude-sonnet-4-6",
         display_name="Claude Sonnet 4.6",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
+        capabilities=frozenset(
+            {Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}
+        ),
         tier=Tier.MEDIUM,
         supports_tools=True,
     ),
@@ -84,7 +87,6 @@ def _classify_error(err: Exception) -> ErrorKind:
     if "400" in msg or "invalid" in msg:
         return ErrorKind.INVALID_REQUEST
     return ErrorKind.INTERNAL
-
 
 
 # ##################################################################
@@ -167,8 +169,15 @@ class ClaudeProvider:
             # needs at least 2 turns for the tool call round-trip
             effective_max_turns = max(max_turns, 2)
         options = _build_options(
-            _sdk, model, tools, cwd, effective_max_turns, self._permission_mode,
-            mcp_servers, output_format, setting_sources,
+            _sdk,
+            model,
+            tools,
+            cwd,
+            effective_max_turns,
+            self._permission_mode,
+            mcp_servers,
+            output_format,
+            setting_sources,
         )
 
         saved = _strip_claudecode()
@@ -194,6 +203,7 @@ class ClaudeProvider:
             if parsed_data is None and response_text:
                 import json
                 from daz_agent_sdk.types import parse_json_from_llm
+
                 try:
                     parsed_data = parse_json_from_llm(response_text)
                 except json.JSONDecodeError as e:
@@ -240,7 +250,9 @@ class ClaudeProvider:
         mcp_servers: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         prompt = _build_prompt(messages)
-        options = _build_options(_sdk, model, None, None, 1, self._permission_mode, mcp_servers)
+        options = _build_options(
+            _sdk, model, None, None, 1, self._permission_mode, mcp_servers
+        )
 
         saved = _strip_claudecode()
         try:
@@ -251,20 +263,6 @@ class ClaudeProvider:
             raise AgentError(str(err), kind=kind) from err
         finally:
             _restore_claudecode(saved)
-
-    # ##################################################################
-    # generate image
-    # claude does not support image generation
-    async def generate_image(
-        self,
-        prompt: str,
-        *,
-        width: int,
-        height: int,
-        output: Path,
-        **kwargs: Any,
-    ) -> ImageResult:
-        raise NotImplementedError("claude does not support image generation")
 
 
 # ##################################################################
@@ -330,6 +328,7 @@ def _build_options(
 # which kills the async generator and loses all collected text.
 async def _collect_response(prompt: str, options: Any) -> tuple[str, Any]:
     import importlib
+
     _client = importlib.import_module("claude_agent_sdk._internal.client")
 
     class _SkipMessage:
@@ -369,7 +368,10 @@ async def _collect_response(prompt: str, options: Any) -> tuple[str, Any]:
             # capture structured output from StructuredOutput tool calls
             if isinstance(message, _sdk.AssistantMessage):
                 for block in message.content:
-                    if isinstance(block, _sdk.ToolUseBlock) and block.name == "StructuredOutput":
+                    if (
+                        isinstance(block, _sdk.ToolUseBlock)
+                        and block.name == "StructuredOutput"
+                    ):
                         structured_output = block.input
             text = _extract_text(message)
             if text:
@@ -379,7 +381,12 @@ async def _collect_response(prompt: str, options: Any) -> tuple[str, Any]:
         if "messageparse" in err_str or "unknown" in err_str:
             # only swallow parse errors if we already collected text
             if parts or result_text:
-                _logger.warning("claude: swallowed parse error after %d msgs (%d skipped): %s", msg_count, skip_count, err)
+                _logger.warning(
+                    "claude: swallowed parse error after %d msgs (%d skipped): %s",
+                    msg_count,
+                    skip_count,
+                    err,
+                )
             else:
                 raise
         else:
@@ -393,7 +400,10 @@ async def _collect_response(prompt: str, options: Any) -> tuple[str, Any]:
     if not response:
         _logger.warning(
             "claude: empty response — %d messages received, %d skipped, types: %s, parts: %d",
-            msg_count, skip_count, msg_types, len(parts),
+            msg_count,
+            skip_count,
+            msg_types,
+            len(parts),
         )
     return response, structured_output
 
@@ -403,6 +413,7 @@ async def _collect_response(prompt: str, options: Any) -> tuple[str, Any]:
 # iterate through the sdk query and yield text chunks as they arrive
 async def _stream_response(prompt: str, options: Any) -> AsyncIterator[str]:
     import importlib
+
     _client = importlib.import_module("claude_agent_sdk._internal.client")
 
     class _SkipMessage:
@@ -440,4 +451,5 @@ async def _stream_response(prompt: str, options: Any) -> AsyncIterator[str]:
 # management in the conversation module
 def _placeholder_uuid() -> Any:
     from uuid import uuid4
+
     return uuid4()

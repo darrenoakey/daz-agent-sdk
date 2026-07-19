@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import socket
-from urllib.parse import urlparse
-
 import pytest
-import pytest_asyncio  # noqa: F401 — registers asyncio mode
 from pydantic import BaseModel
 
 from daz_agent_sdk.providers.arbiter import ArbiterProvider, _KNOWN_TIERS
@@ -19,32 +15,6 @@ from daz_agent_sdk.types import (
     Tier,
 )
 
-
-# ##################################################################
-# arbiter reachability check
-# probe the default arbiter endpoint at module load so online tests
-# skip quickly when the spark machine is offline. avoids per-test
-# try/except noise and long timeouts in CI.
-_DEFAULT_URL = "http://10.0.0.254:8400"
-
-
-def _arbiter_reachable() -> bool:
-    parsed = urlparse(_DEFAULT_URL)
-    host = parsed.hostname or "10.0.0.254"
-    port = parsed.port or 8400
-    try:
-        s = socket.create_connection((host, port), timeout=2)
-        s.close()
-        return True
-    except OSError:
-        return False
-
-
-ARBITER_RUNNING = _arbiter_reachable()
-skip_if_no_arbiter = pytest.mark.skipif(
-    not ARBITER_RUNNING,
-    reason="Arbiter not reachable at 10.0.0.254:8400",
-)
 
 # ##################################################################
 # test model selection
@@ -87,10 +57,9 @@ def test_constructor_strips_trailing_slash() -> None:
 
 # ##################################################################
 # available — online tests
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_available_returns_true() -> None:
-    provider = ArbiterProvider()
+async def test_available_returns_true(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
     result = await provider.available()
     assert result is True
 
@@ -104,10 +73,9 @@ async def test_available_wrong_port_returns_false() -> None:
 
 # ##################################################################
 # list models — online tests
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_list_models_returns_model_info_instances() -> None:
-    provider = ArbiterProvider()
+async def test_list_models_returns_model_info_instances(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
     models = await provider.list_models()
     assert len(models) > 0
     for m in models:
@@ -119,10 +87,9 @@ async def test_list_models_returns_model_info_instances() -> None:
         assert isinstance(m.tier, Tier)
 
 
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_list_models_includes_qwen() -> None:
-    provider = ArbiterProvider()
+async def test_list_models_includes_qwen(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
     models = await provider.list_models()
     names = {m.model_id for m in models}
     assert "qwen3.6-27b" in names
@@ -138,11 +105,12 @@ async def test_list_models_wrong_port_returns_empty() -> None:
 # ##################################################################
 # complete — online tests
 # generous timeouts so the first call can warm a cold model.
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_complete_simple_prompt() -> None:
-    provider = ArbiterProvider()
-    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
+async def test_complete_simple_prompt(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
+    messages = [
+        Message(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     model = _make_model()
     resp = await provider.complete(messages, model, timeout=180.0)
     assert isinstance(resp, Response)
@@ -152,10 +120,9 @@ async def test_complete_simple_prompt() -> None:
     assert resp.turn_id is not None
 
 
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_complete_with_system_message() -> None:
-    provider = ArbiterProvider()
+async def test_complete_with_system_message(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
     messages = [
         Message(role="system", content="You are a terse assistant. Be brief."),
         Message(role="user", content="What is the capital of France?"),
@@ -168,14 +135,13 @@ async def test_complete_with_system_message() -> None:
 
 # ##################################################################
 # structured output — online tests
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_complete_structured_output() -> None:
+async def test_complete_structured_output(arbiter_tunnel_url: str) -> None:
     class MathAnswer(BaseModel):
         result: int
         explanation: str
 
-    provider = ArbiterProvider()
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
     messages = [Message(role="user", content="What is 3 multiplied by 7?")]
     model = _make_model()
     resp = await provider.complete(messages, model, schema=MathAnswer, timeout=300.0)
@@ -186,10 +152,9 @@ async def test_complete_structured_output() -> None:
 
 # ##################################################################
 # stream — online tests
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_stream_yields_string_chunks() -> None:
-    provider = ArbiterProvider()
+async def test_stream_yields_string_chunks(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
     messages = [Message(role="user", content="Count from 1 to 5, one number per line.")]
     model = _make_model()
     chunks: list[str] = []
@@ -201,11 +166,14 @@ async def test_stream_yields_string_chunks() -> None:
     assert full.strip() != ""
 
 
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_stream_produces_complete_response() -> None:
-    provider = ArbiterProvider()
-    messages = [Message(role="user", content="What is 10 divided by 2? Reply with just the number.")]
+async def test_stream_produces_complete_response(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
+    messages = [
+        Message(
+            role="user", content="What is 10 divided by 2? Reply with just the number."
+        )
+    ]
     model = _make_model()
     full = ""
     async for chunk in provider.stream(messages, model, timeout=180.0):
@@ -241,11 +209,12 @@ async def test_stream_wrong_port_raises_agent_error() -> None:
 # verifies the reasoning→content fallback path with the default
 # low/free_fast/free_thinking tier model. marked slow because a cold
 # qwen load is ~10 minutes.
-@skip_if_no_arbiter
 @pytest.mark.asyncio
-async def test_complete_qwen_reasoning_model() -> None:
-    provider = ArbiterProvider()
-    messages = [Message(role="user", content="What is 2+2? Answer with just the number.")]
+async def test_complete_qwen_reasoning_model(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
+    messages = [
+        Message(role="user", content="What is 2+2? Answer with just the number.")
+    ]
     model = ModelInfo(
         provider="arbiter",
         model_id="qwen3.6-27b",
@@ -264,6 +233,7 @@ async def test_complete_qwen_reasoning_model() -> None:
 # answer from message — reasoning-vs-content extraction (pure unit tests)
 def test_answer_from_message_prefers_content() -> None:
     from daz_agent_sdk.providers.arbiter import _answer_from_message
+
     msg = {"content": "The story text.", "reasoning": "planning notes"}
     assert _answer_from_message(msg) == "The story text."
 
@@ -275,6 +245,7 @@ def test_answer_from_message_empty_content_with_reasoning_raises_retryable() -> 
     from daz_agent_sdk.providers.arbiter import _answer_from_message
     from daz_agent_sdk.types import AgentError, ErrorKind
     import pytest as _pytest
+
     msg = {"content": "", "reasoning": "1. Analyze the user input..."}
     with _pytest.raises(AgentError) as exc_info:
         _answer_from_message(msg)
@@ -283,6 +254,7 @@ def test_answer_from_message_empty_content_with_reasoning_raises_retryable() -> 
 
 def test_answer_from_message_both_empty_returns_empty() -> None:
     from daz_agent_sdk.providers.arbiter import _answer_from_message
+
     assert _answer_from_message({}) == ""
     assert _answer_from_message({"content": "", "reasoning": ""}) == ""
 
@@ -290,15 +262,20 @@ def test_answer_from_message_both_empty_returns_empty() -> None:
 # ##################################################################
 # max_tokens plumbing — the parameter must actually reach the server
 @pytest.mark.asyncio
-async def test_complete_max_tokens_caps_output() -> None:
-    provider = ArbiterProvider()
-    if not await provider.available():
-        pytest.skip("arbiter unreachable")
+async def test_complete_max_tokens_caps_output(arbiter_tunnel_url: str) -> None:
+    provider = ArbiterProvider(base_url=arbiter_tunnel_url)
+    assert await provider.available(), (
+        "arbiter is unreachable through its loopback tunnel"
+    )
     models = await provider.list_models()
     target = next((m for m in models if m.model_id == "qwen3.6-35b"), None)
-    if target is None:
-        pytest.skip("qwen3.6-35b not registered")
-    messages = [Message(role="user", content="Count from one to one thousand in words, without stopping.")]
+    assert target is not None, "qwen3.6-35b is not registered"
+    messages = [
+        Message(
+            role="user",
+            content="Count from one to one thousand in words, without stopping.",
+        )
+    ]
     # a 32-token cap must be honored by the server: either a tiny visible
     # response, or (for a reasoning model) the thinking consumes the whole
     # budget and the empty-content guard raises — both prove the cap arrived,

@@ -2,7 +2,7 @@
 
 # daz-agent-sdk
 
-Your AI Swiss Army knife. One library that handles text, images, and speech — from any provider — without the hassle of writing boilerplate, managing API quirks, or worrying about what happens when a service goes down.
+Your AI Swiss Army knife. One library handles text-provider routing, durable Codex image jobs, and speech without provider-specific boilerplate.
 
 ```python
 from daz_agent_sdk import agent
@@ -11,7 +11,7 @@ answer = await agent.ask("Explain quantum tunnelling in one paragraph")
 print(answer.text)
 ```
 
-That's genuinely all it takes. daz-agent-sdk figures out which model to use, makes the call, and hands you the answer. If something goes wrong — rate limits, outages, the usual — it quietly tries another provider and you never have to think about it.
+That's genuinely all it takes. For text, daz-agent-sdk figures out which model to use and can try another provider after transient failures. Image jobs never cascade to another backend.
 
 ---
 
@@ -19,7 +19,7 @@ That's genuinely all it takes. daz-agent-sdk figures out which model to use, mak
 
 Most AI projects end up drowning in boilerplate: retry logic, provider-specific SDKs, response parsing, error handling, and hardcoded model names scattered across files. daz-agent-sdk replaces all of that with a single, consistent interface.
 
-You describe **what** you need — a quick answer, a structured result, a long conversation, an image, some audio — and daz-agent-sdk handles the rest. Switch providers, change models, add fallbacks — all without touching your application code.
+You describe **what** you need — a quick answer, a structured result, a long conversation, an image, some audio — and daz-agent-sdk handles the rest. Text supports provider routing; images deliberately use one durable service with no fallback.
 
 ---
 
@@ -145,7 +145,7 @@ async with agent.conversation("brainstorm") as chat:
 
 ### Generate Images
 
-Create images from text descriptions. Powered by Nano Banana 2 (via Gemini) by default.
+Still-image generation and editing use only the durable Mac mini Codex image service at `http://10.0.0.46:8830`. The origin is hard-pinned and caller overrides are not accepted. HTTP uses the signed system `/usr/bin/curl` transport so macOS Local Network privacy cannot selectively deny an unsigned Python child while still preserving the one fixed origin. The SDK submits one `/jobs` request, polls that job, and verifies the returned PNG. It never falls back to Spark, Flux, Ollama, Gemini, or direct OpenAI image APIs.
 
 ```python
 result = await agent.image(
@@ -155,6 +155,8 @@ result = await agent.image(
     output="garden.png",
 )
 print(result.path)
+print(result.job_id, result.status, result.ready)
+print(result.idempotency_key, result.replayed)
 ```
 
 Need a transparent background? Just ask:
@@ -169,18 +171,42 @@ logo = await agent.image(
 )
 ```
 
-Or use your local machine for generation:
+Edit one or more source images through the same service:
 
 ```python
-result = await agent.image("Robot portrait", provider="mflux")
+result = await agent.image(
+    "Turn this into a watercolor illustration",
+    width=1024,
+    height=1024,
+    image="source.png",
+)
 ```
 
-Install the extras you need:
+If a local wait expires, `ready` is `False` and `job_id`/`status` identify the durable server job; no replacement job is submitted.
+
+Each logical submission uses one UUID `Idempotency-Key`. Transport retries reuse the exact encoded request and key, so an accepted response that is lost replays to the original job. Callers that persist their own recovery state can supply `idempotency_key=` or call `submit_image_job(..., idempotency_key=key)` directly. Structured `409` and `410` errors include the key and original job ID in `AgentError.attempts`.
+
+Resume or inspect that exact job without submitting another request:
+
+```python
+status = await agent.image_job_status(result.job_id)
+result = await agent.resume_image_job(
+    result.job_id, output="garden.png", timeout=600
+)
+# For an already-complete job:
+result = await agent.download_image_job(result.job_id, output="garden.png")
+```
+
+Recovery results retain the service provider and complete attempt provenance.
+
+The existing CLI supports crash-safe state before the first POST byte:
 
 ```bash
-pip install "daz-agent-sdk[transparent]"   # Enables transparent background removal
-pip install "daz-agent-sdk[mflux]"         # Enables local image generation
+daz-agent-sdk image --prompt "A fox" --width 512 --height 512 --output fox.png --state fox.state.json
+daz-agent-sdk image --recover fox.state.json
 ```
+
+State is atomically replaced with mode `0600`; it contains the exact effective POST body and key until the returned job ID is durably recorded.
 
 ### Text-to-Speech
 
@@ -248,7 +274,7 @@ daz-agent-sdk models
 
 ---
 
-## Supported Providers
+## Supported Text Providers
 
 | Provider | What You Need |
 |----------|--------------|
@@ -258,6 +284,8 @@ daz-agent-sdk models
 | **Ollama** | Ollama running locally (`ollama serve`) |
 
 Don't have all of them? No problem. daz-agent-sdk automatically detects which providers are available and skips the ones that aren't. Even a single provider works perfectly — you get fallback across whatever you have set up.
+
+Image generation is the exception: its only provider selector is `codex`, and legacy image provider/model/step pins fail closed.
 
 ---
 

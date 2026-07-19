@@ -57,14 +57,16 @@ func TestNewOllamaProviderCustomURL(t *testing.T) {
 	}
 }
 
-// Integration tests against a real Ollama instance at localhost:11434.
-// These are skipped if Ollama is not available.
+// Integration tests against the real Ollama instance at localhost:11434.
 
-func skipIfOllamaUnavailable(t *testing.T, p *OllamaProvider) {
+func requireOllamaAvailable(t *testing.T, p *OllamaProvider) {
 	t.Helper()
 	ok, err := p.Available(context.Background())
-	if err != nil || !ok {
-		t.Skip("Ollama is not available at localhost:11434, skipping integration test")
+	if err != nil {
+		t.Fatalf("checking Ollama availability: %v", err)
+	}
+	if !ok {
+		t.Fatal("Ollama is not available at localhost:11434")
 	}
 }
 
@@ -80,14 +82,14 @@ func TestOllamaAvailable(t *testing.T) {
 
 func TestOllamaListModels(t *testing.T) {
 	p := NewOllamaProvider("")
-	skipIfOllamaUnavailable(t, p)
+	requireOllamaAvailable(t, p)
 
 	models, err := p.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels error: %v", err)
 	}
 	if len(models) == 0 {
-		t.Skip("No models installed in Ollama")
+		t.Fatal("no models installed in Ollama")
 	}
 
 	for _, m := range models {
@@ -103,9 +105,10 @@ func TestOllamaListModels(t *testing.T) {
 		if len(m.Capabilities) == 0 {
 			t.Errorf("model %q has no capabilities", m.ModelID)
 		}
-		// All ollama models should have text and structured
+		// Chat models expose text/structured; embedding-only models do not.
 		hasText := false
 		hasStructured := false
+		hasEmbedding := false
 		for _, c := range m.Capabilities {
 			if c == sdk.CapabilityText {
 				hasText = true
@@ -113,11 +116,17 @@ func TestOllamaListModels(t *testing.T) {
 			if c == sdk.CapabilityStructured {
 				hasStructured = true
 			}
+			if c == sdk.CapabilityEmbedding {
+				hasEmbedding = true
+			}
 		}
-		if !hasText {
+		if hasEmbedding && (hasText || hasStructured || m.SupportsStreaming) {
+			t.Errorf("embedding model %q advertises chat support", m.ModelID)
+		}
+		if !hasEmbedding && !hasText {
 			t.Errorf("model %q missing text capability", m.ModelID)
 		}
-		if !hasStructured {
+		if !hasEmbedding && !hasStructured {
 			t.Errorf("model %q missing structured capability", m.ModelID)
 		}
 	}
@@ -127,11 +136,14 @@ func TestOllamaListModels(t *testing.T) {
 
 func TestOllamaComplete(t *testing.T) {
 	p := NewOllamaProvider("")
-	skipIfOllamaUnavailable(t, p)
+	requireOllamaAvailable(t, p)
 
 	models, err := p.ListModels(context.Background())
-	if err != nil || len(models) == 0 {
-		t.Skip("No models available for Complete test")
+	if err != nil {
+		t.Fatalf("ListModels error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("no models available for Complete test")
 	}
 
 	// Use the first available model
@@ -157,11 +169,14 @@ func TestOllamaComplete(t *testing.T) {
 
 func TestOllamaStream(t *testing.T) {
 	p := NewOllamaProvider("")
-	skipIfOllamaUnavailable(t, p)
+	requireOllamaAvailable(t, p)
 
 	models, err := p.ListModels(context.Background())
-	if err != nil || len(models) == 0 {
-		t.Skip("No models available for Stream test")
+	if err != nil {
+		t.Fatalf("ListModels error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("no models available for Stream test")
 	}
 
 	model := models[0]
@@ -326,9 +341,14 @@ func TestChatRequestMarshalStreamFlag(t *testing.T) {
 			Messages: []map[string]string{},
 			Stream:   streamVal,
 		}
-		data, _ := json.Marshal(req)
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal request: %v", err)
+		}
 		var obj map[string]any
-		json.Unmarshal(data, &obj) //nolint:errcheck
+		if err := json.Unmarshal(data, &obj); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
 		got, _ := obj["stream"].(bool)
 		if got != streamVal {
 			t.Errorf("stream = %v, want %v", got, streamVal)
@@ -340,24 +360,33 @@ func TestChatRequestMarshalStreamFlag(t *testing.T) {
 // Unit tests: Complete wires Schema into Format via httptest server
 // ---------------------------------------------------------------------------
 
-// newFakeChatServer creates a test HTTP server that captures the last
+// newLocalChatServer creates a local HTTP server that captures the last
 // /api/chat request body and returns a minimal chat response.
-func newFakeChatServer(t *testing.T) (*httptest.Server, *[]byte) {
+func newLocalChatServer(t *testing.T) (*httptest.Server, *[]byte) {
 	t.Helper()
 	captured := new([]byte)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/chat" {
-			body, _ := io.ReadAll(r.Body)
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read request body: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			*captured = body
 			w.Header().Set("Content-Type", "application/json")
 			resp := `{"message":{"role":"assistant","content":"42"}}`
-			w.Write([]byte(resp)) //nolint:errcheck
+			if _, err := w.Write([]byte(resp)); err != nil {
+				t.Errorf("write chat response: %v", err)
+			}
 			return
 		}
 		// /api/tags — return empty model list so Available passes
 		if r.URL.Path == "/api/tags" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"models":[]}`)) //nolint:errcheck
+			if _, err := w.Write([]byte(`{"models":[]}`)); err != nil {
+				t.Errorf("write tags response: %v", err)
+			}
 			return
 		}
 		http.NotFound(w, r)
@@ -368,7 +397,7 @@ func newFakeChatServer(t *testing.T) (*httptest.Server, *[]byte) {
 // TestCompletePassesSchemaAsFormat verifies that when opts.Schema is set,
 // Complete sends the schema in the format field.
 func TestCompletePassesSchemaAsFormat(t *testing.T) {
-	srv, captured := newFakeChatServer(t)
+	srv, captured := newLocalChatServer(t)
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -409,7 +438,7 @@ func TestCompletePassesSchemaAsFormat(t *testing.T) {
 // TestCompleteOmitsFormatWhenSchemaIsNil verifies that when opts.Schema is
 // nil (plain text request), no format field appears in the request body.
 func TestCompleteOmitsFormatWhenSchemaIsNil(t *testing.T) {
-	srv, captured := newFakeChatServer(t)
+	srv, captured := newLocalChatServer(t)
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -435,7 +464,7 @@ func TestCompleteOmitsFormatWhenSchemaIsNil(t *testing.T) {
 // TestCompleteResponseFields verifies that a successful Complete response
 // has a non-empty Text, non-zero UUIDs, and correct ModelUsed.
 func TestCompleteResponseFields(t *testing.T) {
-	srv, _ := newFakeChatServer(t)
+	srv, _ := newLocalChatServer(t)
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -465,10 +494,10 @@ func TestCompleteResponseFields(t *testing.T) {
 }
 
 // TestCompleteDefaultTimeout verifies that a zero timeout is replaced with
-// the default (300 s) without hanging the test (the fake server responds
+// the default (300 s) while the local protocol server responds
 // immediately so any positive timeout works).
 func TestCompleteDefaultTimeout(t *testing.T) {
-	srv, _ := newFakeChatServer(t)
+	srv, _ := newLocalChatServer(t)
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -521,20 +550,23 @@ func TestClassifyHTTPErrorUnknown(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit tests: HTTP error status codes via fake server
+// Unit tests: HTTP error status codes via a local protocol server
 // ---------------------------------------------------------------------------
 
 // newStatusServer creates a test server that always returns the given status code.
-func newStatusServer(status int, body string) *httptest.Server {
+func newStatusServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
-		w.Write([]byte(body)) //nolint:errcheck
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write status response: %v", err)
+		}
 	}))
 }
 
 // TestCompleteRateLimitError verifies that HTTP 429 is classified as ErrorRateLimit.
 func TestCompleteRateLimitError(t *testing.T) {
-	srv := newStatusServer(http.StatusTooManyRequests, "rate limited")
+	srv := newStatusServer(t, http.StatusTooManyRequests, "rate limited")
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -555,7 +587,7 @@ func TestCompleteRateLimitError(t *testing.T) {
 
 // TestCompleteServerError verifies that HTTP 500 is classified as ErrorInternal.
 func TestCompleteServerError(t *testing.T) {
-	srv := newStatusServer(http.StatusInternalServerError, "server broke")
+	srv := newStatusServer(t, http.StatusInternalServerError, "server broke")
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -593,7 +625,7 @@ func TestBuildMessagesEmpty(t *testing.T) {
 // TestCompleteWithEmptyMessages verifies Complete does not panic or error
 // when sent with an empty message list (server decides what to do).
 func TestCompleteWithEmptyMessages(t *testing.T) {
-	srv, captured := newFakeChatServer(t)
+	srv, captured := newLocalChatServer(t)
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -604,7 +636,9 @@ func TestCompleteWithEmptyMessages(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.Unmarshal(*captured, &body) //nolint:errcheck
+	if err := json.Unmarshal(*captured, &body); err != nil {
+		t.Fatalf("unmarshal captured body: %v", err)
+	}
 	msgs, _ := body["messages"].([]any)
 	if len(msgs) != 0 {
 		t.Errorf("expected 0 messages in request, got %d", len(msgs))
@@ -612,13 +646,13 @@ func TestCompleteWithEmptyMessages(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit tests: streaming error scenario via fake server
+// Unit tests: streaming error scenario via a local protocol server
 // ---------------------------------------------------------------------------
 
 // TestStreamServerError verifies that HTTP 500 from Stream returns an error
 // immediately (before the channel is opened).
 func TestStreamServerError(t *testing.T) {
-	srv := newStatusServer(http.StatusInternalServerError, "stream broke")
+	srv := newStatusServer(t, http.StatusInternalServerError, "stream broke")
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -639,7 +673,7 @@ func TestStreamServerError(t *testing.T) {
 
 // TestStreamRateLimitError verifies that HTTP 429 from Stream returns ErrorRateLimit.
 func TestStreamRateLimitError(t *testing.T) {
-	srv := newStatusServer(http.StatusTooManyRequests, "rate limited")
+	srv := newStatusServer(t, http.StatusTooManyRequests, "rate limited")
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -692,7 +726,10 @@ func TestChatRequestMarshalComplexSchema(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	// Re-marshal the Format field and check it still decodes to a map with the right keys
-	fmtBytes, _ := json.Marshal(out.Format)
+	fmtBytes, err := json.Marshal(out.Format)
+	if err != nil {
+		t.Fatalf("marshal format: %v", err)
+	}
 	var fmtObj map[string]any
 	if err := json.Unmarshal(fmtBytes, &fmtObj); err != nil {
 		t.Fatalf("format round-trip decode error: %v", err)
@@ -714,7 +751,7 @@ func TestChatRequestMarshalComplexSchema(t *testing.T) {
 // TestCompletePassesComplexSchemaToServer verifies that a complex multi-field
 // schema is sent verbatim to the server's format field.
 func TestCompletePassesComplexSchemaToServer(t *testing.T) {
-	srv, captured := newFakeChatServer(t)
+	srv, captured := newLocalChatServer(t)
 	defer srv.Close()
 
 	p := NewOllamaProvider(srv.URL)
@@ -747,9 +784,14 @@ func TestCompletePassesComplexSchemaToServer(t *testing.T) {
 		t.Fatal("format field missing from request")
 	}
 	// Re-encode to check nested properties survive
-	fmtBytes, _ := json.Marshal(fmtRaw)
+	fmtBytes, err := json.Marshal(fmtRaw)
+	if err != nil {
+		t.Fatalf("marshal captured format: %v", err)
+	}
 	var fmtObj map[string]any
-	json.Unmarshal(fmtBytes, &fmtObj) //nolint:errcheck
+	if err := json.Unmarshal(fmtBytes, &fmtObj); err != nil {
+		t.Fatalf("unmarshal captured format: %v", err)
+	}
 	props, ok := fmtObj["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("format.properties should be a map")
@@ -780,15 +822,15 @@ func firstModelWithStructured(models []sdk.ModelInfo) sdk.ModelInfo {
 // TestOllamaCompleteStructuredSimple is an integration test that asks a
 // simple maths question and expects a JSON response matching a basic schema.
 func TestOllamaCompleteStructuredSimple(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
 	p := NewOllamaProvider("")
-	skipIfOllamaUnavailable(t, p)
+	requireOllamaAvailable(t, p)
 
 	models, err := p.ListModels(context.Background())
-	if err != nil || len(models) == 0 {
-		t.Skip("no models available")
+	if err != nil {
+		t.Fatalf("ListModels error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("no models available")
 	}
 	model := firstModelWithStructured(models)
 
@@ -825,15 +867,15 @@ func TestOllamaCompleteStructuredSimple(t *testing.T) {
 // TestOllamaCompleteStructuredComplex is an integration test using a
 // multi-field schema to retrieve a structured person description.
 func TestOllamaCompleteStructuredComplex(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
 	p := NewOllamaProvider("")
-	skipIfOllamaUnavailable(t, p)
+	requireOllamaAvailable(t, p)
 
 	models, err := p.ListModels(context.Background())
-	if err != nil || len(models) == 0 {
-		t.Skip("no models available")
+	if err != nil {
+		t.Fatalf("ListModels error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("no models available")
 	}
 	model := firstModelWithStructured(models)
 
@@ -884,7 +926,10 @@ func TestOllamaCompleteStructuredComplex(t *testing.T) {
 func TestChatRequestFormatTagOmitempty(t *testing.T) {
 	// nil interface — omitted
 	noFmt := chatRequest{Model: "m", Messages: nil, Stream: false, Format: nil}
-	data, _ := json.Marshal(noFmt)
+	data, err := json.Marshal(noFmt)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
 	if bytes.Contains(data, []byte(`"format"`)) {
 		t.Error("format key should be absent for nil Format")
 	}
@@ -896,4 +941,3 @@ func TestChatRequestFormatTagOmitempty(t *testing.T) {
 		t.Error("format key should be present for non-nil Format")
 	}
 }
-

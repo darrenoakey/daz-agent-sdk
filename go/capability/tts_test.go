@@ -43,9 +43,8 @@ func TestBuildTTSCommand_FractionalSpeed(t *testing.T) {
 }
 
 func TestSynthesizeSpeech_TTSNotInstalled(t *testing.T) {
-	// Skip if tts is actually installed
-	if _, err := exec.LookPath("tts"); err == nil {
-		t.Skip("tts is installed, skipping not-installed test")
+	if path, err := exec.LookPath("tts"); err == nil {
+		t.Fatalf("test requires the verified absent tts CLI, found %s", path)
 	}
 
 	_, err := SynthesizeSpeech(t.Context(), "hello", SpeakOpts{})

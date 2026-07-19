@@ -194,7 +194,9 @@ class ArbiterProvider(Provider):
                 f"\n\nRespond ONLY with valid JSON that matches this schema:\n{schema_json}\n"
                 "Do not include any explanation or markdown. Output raw JSON only."
             )
-            system_indices = [i for i, m in enumerate(msg_list) if m["role"] == "system"]
+            system_indices = [
+                i for i, m in enumerate(msg_list) if m["role"] == "system"
+            ]
             if system_indices:
                 last_sys = system_indices[-1]
                 msg_list[last_sys] = {
@@ -328,7 +330,7 @@ class ArbiterProvider(Provider):
                             continue
                         if not line.startswith("data:"):
                             continue
-                        payload_str = line[len("data:"):].strip()
+                        payload_str = line[len("data:") :].strip()
                         if payload_str == "[DONE]":
                             break
                         try:
@@ -400,6 +402,7 @@ class ArbiterProvider(Provider):
                     )
 
                 import asyncio as _asyncio
+
                 deadline = _asyncio.get_event_loop().time() + timeout
                 while True:
                     if _asyncio.get_event_loop().time() > deadline:
@@ -423,7 +426,7 @@ class ArbiterProvider(Provider):
                         return status.get("result") or {}
                     if state in ("failed", "cancelled"):
                         raise AgentError(
-                            f"Arbiter embed job {job_id} {state}: {status.get('error','')}",
+                            f"Arbiter embed job {job_id} {state}: {status.get('error', '')}",
                             kind=ErrorKind.INTERNAL,
                         )
                     await _asyncio.sleep(1.0)

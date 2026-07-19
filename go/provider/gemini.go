@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -24,7 +23,7 @@ var geminiModels = []sdk.ModelInfo{
 		DisplayName:          "Gemini 2.5 Pro",
 		Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured, sdk.CapabilityAgentic},
 		Tier:                 sdk.TierHigh,
-		SupportsStreaming:     true,
+		SupportsStreaming:    true,
 		SupportsStructured:   true,
 		SupportsConversation: true,
 		SupportsTools:        true,
@@ -35,26 +34,31 @@ var geminiModels = []sdk.ModelInfo{
 		DisplayName:          "Gemini 2.5 Flash",
 		Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured},
 		Tier:                 sdk.TierMedium,
-		SupportsStreaming:     true,
+		SupportsStreaming:    true,
 		SupportsStructured:   true,
 		SupportsConversation: true,
 		SupportsTools:        true,
 	},
 	{
 		Provider:             "gemini",
-		ModelID:              "gemini-2.5-flash-lite",
-		DisplayName:          "Gemini 2.5 Flash Lite",
+		ModelID:              "gemini-3.1-flash-lite",
+		DisplayName:          "Gemini 3.1 Flash Lite",
 		Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured},
 		Tier:                 sdk.TierLow,
-		SupportsStreaming:     true,
+		SupportsStreaming:    true,
 		SupportsStructured:   true,
 		SupportsConversation: true,
 		SupportsTools:        false,
 	},
 }
 
+var geminiCredentials = []credentialReference{
+	{service: "gemini", account: "api_key"},
+	{service: "google", account: "api_key"},
+}
+
 // GeminiProvider calls the Gemini API using the official Google GenAI Go SDK.
-// Authentication is via GEMINI_API_KEY or GOOGLE_API_KEY environment variable.
+// Authentication comes from the current user's macOS Keychain.
 type GeminiProvider struct{}
 
 // NewGeminiProvider returns a new GeminiProvider.
@@ -62,20 +66,20 @@ func NewGeminiProvider() *GeminiProvider {
 	return &GeminiProvider{}
 }
 
-// geminiAPIKey returns the first non-empty value of GEMINI_API_KEY or GOOGLE_API_KEY.
-func geminiAPIKey() string {
-	if k := os.Getenv("GEMINI_API_KEY"); k != "" {
-		return k
-	}
-	return os.Getenv("GOOGLE_API_KEY")
+// geminiAPIKey returns the first configured Gemini-compatible credential.
+func geminiAPIKey(ctx context.Context) (string, error) {
+	return readCredential(ctx, geminiCredentials...)
 }
 
 // newGeminiClient creates a Gemini API client using the available API key.
 // Returns an error when no key is configured.
 func newGeminiClient(ctx context.Context) (*genai.Client, error) {
-	key := geminiAPIKey()
-	if key == "" {
-		return nil, sdk.NewAgentError("no Gemini API key set (GEMINI_API_KEY or GOOGLE_API_KEY)", sdk.ErrorAuth, nil)
+	credentialContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	key, err := geminiAPIKey(credentialContext)
+	if err != nil {
+		message := fmt.Sprintf("Gemini credential unavailable: %v", err)
+		return nil, sdk.NewAgentError(message, sdk.ErrorAuth, nil)
 	}
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  key,
@@ -95,9 +99,6 @@ func (g *GeminiProvider) Name() string {
 // Available returns true when a Gemini API key is set and the API responds.
 // Returns false (not an error) when the key is absent or the call fails.
 func (g *GeminiProvider) Available(ctx context.Context) (bool, error) {
-	if geminiAPIKey() == "" {
-		return false, nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -192,16 +193,16 @@ func classifyGeminiError(err error) sdk.ErrorKind {
 
 // classifyGeminiStatusCode maps HTTP status codes to ErrorKind values.
 func classifyGeminiStatusCode(statusCode int) sdk.ErrorKind {
-	switch {
-	case statusCode == http.StatusTooManyRequests:
+	switch statusCode {
+	case http.StatusTooManyRequests:
 		return sdk.ErrorRateLimit
-	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return sdk.ErrorAuth
-	case statusCode == http.StatusRequestTimeout:
+	case http.StatusRequestTimeout:
 		return sdk.ErrorTimeout
-	case statusCode == http.StatusBadRequest || statusCode == http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return sdk.ErrorInvalidRequest
-	case statusCode == http.StatusServiceUnavailable:
+	case http.StatusServiceUnavailable:
 		return sdk.ErrorNotAvailable
 	default:
 		return sdk.ErrorInternal

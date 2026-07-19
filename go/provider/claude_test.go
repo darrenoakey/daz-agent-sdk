@@ -16,7 +16,10 @@ import (
 func TestFindClaudeCLI(t *testing.T) {
 	path, err := findClaudeCLI()
 	if err != nil {
-		t.Skipf("claude CLI not installed: %v", err)
+		if path != "" {
+			t.Errorf("findClaudeCLI returned path %q with error %v", path, err)
+		}
+		return
 	}
 	if path == "" {
 		t.Error("findClaudeCLI returned empty path")
@@ -27,11 +30,15 @@ func TestFindClaudeCLI(t *testing.T) {
 func TestFindClaudeCLI_MatchesWhich(t *testing.T) {
 	path, err := findClaudeCLI()
 	if err != nil {
-		t.Skip("claude CLI not installed")
+		if _, lookErr := exec.LookPath("claude"); lookErr == nil {
+			t.Fatalf("findClaudeCLI failed despite claude being on PATH: %v", err)
+		}
+		return
 	}
 	whichPath, err := exec.LookPath("claude")
 	if err != nil {
-		t.Skip("claude not on PATH")
+		t.Logf("claude found through a production fallback path: %s", path)
+		return
 	}
 	if path != whichPath {
 		t.Logf("findClaudeCLI=%s, which=%s (may differ if found in fallback path)", path, whichPath)
@@ -252,15 +259,12 @@ func TestStripClaudeCodeEnv(t *testing.T) {
 	}
 }
 
-// ── Integration tests (require claude CLI) ───────────────────────
+// ── Integration tests against the installed Claude CLI ──────────
 
-func skipIfNoClaudeCLI(t *testing.T) {
+func requireClaudeCLI(t *testing.T) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping claude CLI test in short mode")
-	}
 	if _, err := findClaudeCLI(); err != nil {
-		t.Skipf("claude CLI not available: %v", err)
+		t.Fatalf("Claude CLI unavailable: %v", err)
 	}
 }
 
@@ -269,7 +273,7 @@ func haikuModel() sdk.ModelInfo {
 }
 
 func TestClaudeComplete_BasicText(t *testing.T) {
-	skipIfNoClaudeCLI(t)
+	requireClaudeCLI(t)
 
 	p := NewClaudeProvider()
 	messages := []sdk.Message{{Role: "user", Content: "What is 2+2? Reply with just the number."}}
@@ -277,17 +281,13 @@ func TestClaudeComplete_BasicText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete error: %v", err)
 	}
-	if resp.Text == "" {
-		t.Error("expected non-empty response")
-	}
 	if !strings.Contains(resp.Text, "4") {
 		t.Errorf("expected '4' in response, got: %s", resp.Text)
 	}
-	t.Logf("Response: %s", resp.Text)
 }
 
 func TestClaudeComplete_SystemMessage(t *testing.T) {
-	skipIfNoClaudeCLI(t)
+	requireClaudeCLI(t)
 
 	p := NewClaudeProvider()
 	messages := []sdk.Message{
@@ -298,14 +298,13 @@ func TestClaudeComplete_SystemMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete error: %v", err)
 	}
-	if resp.Text == "" {
+	if strings.TrimSpace(resp.Text) == "" {
 		t.Error("expected non-empty response")
 	}
-	t.Logf("Response: %s", resp.Text)
 }
 
 func TestClaudeComplete_StructuredOutput(t *testing.T) {
-	skipIfNoClaudeCLI(t)
+	requireClaudeCLI(t)
 
 	p := NewClaudeProvider()
 	messages := []sdk.Message{{Role: "user", Content: "What is 10 + 5?"}}
@@ -324,11 +323,13 @@ func TestClaudeComplete_StructuredOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete error: %v", err)
 	}
-	t.Logf("Structured response: %s", resp.Text)
+	if !strings.Contains(resp.Text, "15") {
+		t.Errorf("structured response = %q, want answer 15", resp.Text)
+	}
 }
 
 func TestClaudeStream_BasicText(t *testing.T) {
-	skipIfNoClaudeCLI(t)
+	requireClaudeCLI(t)
 
 	p := NewClaudeProvider()
 	messages := []sdk.Message{{Role: "user", Content: "Say hello in one word."}}
@@ -336,23 +337,20 @@ func TestClaudeStream_BasicText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream error: %v", err)
 	}
-
-	var chunks []string
+	var text strings.Builder
 	for chunk := range ch {
 		if chunk.Err != nil {
 			t.Fatalf("stream chunk error: %v", chunk.Err)
 		}
-		chunks = append(chunks, chunk.Text)
+		text.WriteString(chunk.Text)
 	}
-	fullText := strings.Join(chunks, "")
-	if fullText == "" {
+	if text.Len() == 0 {
 		t.Error("expected non-empty streamed text")
 	}
-	t.Logf("Streamed %d chunks: %s", len(chunks), fullText)
 }
 
 func TestClaudeComplete_ModelUsed(t *testing.T) {
-	skipIfNoClaudeCLI(t)
+	requireClaudeCLI(t)
 
 	p := NewClaudeProvider()
 	messages := []sdk.Message{{Role: "user", Content: "Say hi."}}
@@ -369,13 +367,13 @@ func TestClaudeComplete_ModelUsed(t *testing.T) {
 }
 
 func TestClaudeStream_Timeout(t *testing.T) {
-	skipIfNoClaudeCLI(t)
+	requireClaudeCLI(t)
 
 	p := NewClaudeProvider()
 	messages := []sdk.Message{{Role: "user", Content: "Write a very long essay."}}
 	ch, err := p.Stream(context.Background(), messages, haikuModel(), sdk.StreamOpts{Timeout: 0.001})
 	if err != nil {
-		return // timeout on start is fine
+		return
 	}
 	timeout := time.After(5 * time.Second)
 	for {
@@ -385,8 +383,7 @@ func TestClaudeStream_Timeout(t *testing.T) {
 				return
 			}
 		case <-timeout:
-			t.Error("stream did not terminate within timeout")
-			return
+			t.Fatal("stream did not terminate within timeout")
 		}
 	}
 }

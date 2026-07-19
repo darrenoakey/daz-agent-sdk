@@ -81,7 +81,7 @@ def test_model_info_frozen() -> None:
         tier=Tier.FREE_FAST,
     )
     with pytest.raises(AttributeError):
-        info.provider = "changed"  # type: ignore[misc]
+        setattr(info, "provider", "changed")
 
 
 # ##################################################################
@@ -151,8 +151,8 @@ def test_structured_response() -> None:
 def test_image_result() -> None:
     model = ModelInfo(
         provider="local",
-        model_id="z-image-turbo",
-        display_name="Z-Image Turbo",
+        model_id="macmini-image-service",
+        display_name="Mac mini Codex image service",
         capabilities=frozenset({Capability.IMAGE}),
         tier=Tier.HIGH,
     )
@@ -279,7 +279,9 @@ def test_validate_structured_bare_list_wrapped() -> None:
 
 
 def test_validate_structured_schema_echo_quirk() -> None:
-    out = validate_structured_json(_TwoField, {"properties": {"a": "1", "b": "2"}, "type": "object"})
+    out = validate_structured_json(
+        _TwoField, {"properties": {"a": "1", "b": "2"}, "type": "object"}
+    )
     assert out.a == "1" and out.b == "2"
 
 

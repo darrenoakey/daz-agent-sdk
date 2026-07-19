@@ -41,8 +41,10 @@ def _build_stt_command(
     cmd = [
         "whisper",
         str(audio_path),
-        "--model", model_size,
-        "--output_format", "txt",
+        "--model",
+        model_size,
+        "--output_format",
+        "txt",
     ]
     if language is not None:
         cmd.extend(["--language", language])

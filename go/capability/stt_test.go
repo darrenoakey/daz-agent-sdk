@@ -54,15 +54,14 @@ func TestTranscribe_FileNotFound(t *testing.T) {
 }
 
 func TestTranscribe_WhisperNotInstalled(t *testing.T) {
-	// Skip if whisper is actually installed
-	if _, err := exec.LookPath("whisper"); err == nil {
-		t.Skip("whisper is installed, skipping not-installed test")
+	if path, err := exec.LookPath("whisper"); err == nil {
+		t.Fatalf("test requires the verified absent whisper CLI, found %s", path)
 	}
 
 	// Create a temp file to pass the existence check
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.wav")
-	if err := os.WriteFile(tmpFile, []byte("fake audio data"), 0o644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte("RIFF\x00\x00\x00\x00WAVE"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

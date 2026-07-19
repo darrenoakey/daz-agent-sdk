@@ -3,6 +3,8 @@ package dazagentsdk
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -29,8 +31,8 @@ func TestDefaultTierChains(t *testing.T) {
 	}
 
 	tests := []struct {
-		tier     Tier
-		wantLen  int
+		tier      Tier
+		wantLen   int
 		wantFirst string
 	}{
 		{TierVeryHigh, 3, "claude:claude-opus-4-6"},
@@ -53,6 +55,25 @@ func TestDefaultTierChains(t *testing.T) {
 	}
 }
 
+func TestDefaultTierChainsUseCurrentCodexModel(t *testing.T) {
+	config, err := LoadConfig("/nonexistent/path/config.yaml")
+	if err != nil {
+		t.Fatalf("loading defaults: %v", err)
+	}
+	for _, tier := range []Tier{TierVeryHigh, TierHigh, TierMedium} {
+		chain := GetTierChain(tier, config)
+		codexEntries := make([]string, 0, 1)
+		for _, entry := range chain {
+			if strings.HasPrefix(entry, "codex:") {
+				codexEntries = append(codexEntries, entry)
+			}
+		}
+		if !reflect.DeepEqual(codexEntries, []string{"codex:gpt-5.6-sol"}) {
+			t.Errorf("GetTierChain(%v) Codex entries = %v, want current default", tier, codexEntries)
+		}
+	}
+}
+
 func TestDefaultImageSteps(t *testing.T) {
 	cfg, err := LoadConfig("/nonexistent/path/config.yaml")
 	if err != nil {
@@ -63,12 +84,11 @@ func TestDefaultImageSteps(t *testing.T) {
 		tier      Tier
 		wantSteps int
 	}{
-		{TierVeryHigh, 8},
-		{TierHigh, 3},
-		{TierMedium, 3},
-		{TierLow, 2},
-		// free_fast has no image tier, falls back to medium
-		{TierFreeFast, 3},
+		{TierVeryHigh, 0},
+		{TierHigh, 0},
+		{TierMedium, 0},
+		{TierLow, 0},
+		{TierFreeFast, 0},
 	}
 
 	for _, tt := range tests {
@@ -84,8 +104,8 @@ func TestDefaultImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Image.Model != "z-image-turbo" {
-		t.Errorf("Image.Model = %q, want %q", cfg.Image.Model, "z-image-turbo")
+	if cfg.Image.Model != "" {
+		t.Errorf("Image.Model = %q, want empty service-owned default", cfg.Image.Model)
 	}
 }
 
@@ -173,8 +193,8 @@ func TestDefaultTransparentPostProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Image.TransparentPostProcess != "birefnet" {
-		t.Errorf("Image.TransparentPostProcess = %q, want birefnet", cfg.Image.TransparentPostProcess)
+	if cfg.Image.TransparentPostProcess != "" {
+		t.Errorf("Image.TransparentPostProcess = %q, want empty service-owned default", cfg.Image.TransparentPostProcess)
 	}
 }
 
@@ -247,9 +267,9 @@ logging:
 		t.Errorf("custom high steps = %d, want 10", GetImageSteps(TierHigh, cfg))
 	}
 
-	// Default image steps still present for medium
-	if GetImageSteps(TierMedium, cfg) != 3 {
-		t.Errorf("default medium steps = %d, want 3", GetImageSteps(TierMedium, cfg))
+	// Unspecified legacy image steps stay empty.
+	if GetImageSteps(TierMedium, cfg) != 0 {
+		t.Errorf("default medium steps = %d, want 0", GetImageSteps(TierMedium, cfg))
 	}
 
 	// Custom transparent post process
@@ -282,10 +302,10 @@ func TestGetImageStepsUnknownTier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// free_thinking has no image tier, should fall back to medium (3)
+	// No backend-owned default is installed.
 	steps := GetImageSteps(TierFreeThinking, cfg)
-	if steps != 3 {
-		t.Errorf("GetImageSteps(free_thinking) = %d, want 3 (medium fallback)", steps)
+	if steps != 0 {
+		t.Errorf("GetImageSteps(free_thinking) = %d, want 0", steps)
 	}
 }
 

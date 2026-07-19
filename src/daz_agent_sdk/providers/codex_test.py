@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import os
+import subprocess
+from pathlib import Path
+
 import pytest
-import pytest_asyncio  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 from daz_agent_sdk.providers.codex import (
     CodexProvider,
@@ -9,6 +13,7 @@ from daz_agent_sdk.providers.codex import (
     _classify_error,
 )
 from daz_agent_sdk.types import (
+    AgentError,
     Capability,
     ErrorKind,
     Message,
@@ -21,12 +26,14 @@ from daz_agent_sdk.types import (
 
 # ##################################################################
 # helper — make model info
-def _make_model(model_id: str = "gpt-5.5") -> ModelInfo:
+def _make_model(model_id: str = "gpt-5.6-sol") -> ModelInfo:
     return ModelInfo(
         provider="codex",
         model_id=model_id,
-        display_name="GPT-5.3 Codex",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
+        display_name="GPT-5.6 Sol",
+        capabilities=frozenset(
+            {Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}
+        ),
         tier=Tier.HIGH,
     )
 
@@ -115,20 +122,13 @@ async def test_available_returns_bool() -> None:
 async def test_list_models() -> None:
     provider = CodexProvider()
     models = await provider.list_models()
-    assert len(models) == 2
+    assert len(models) == 1
     for m in models:
         assert isinstance(m, ModelInfo)
         assert m.provider == "codex"
         assert Capability.TEXT in m.capabilities
-
-
-@pytest.mark.asyncio
-async def test_generate_image_raises() -> None:
-    from pathlib import Path
-
-    provider = CodexProvider()
-    with pytest.raises(NotImplementedError):
-        await provider.generate_image("a cat", width=512, height=512, output=Path("/tmp/test.png"))
+    assert models[0].model_id == "gpt-5.6-sol"
+    assert models[0].display_name == "GPT-5.6 Sol"
 
 
 # ##################################################################
@@ -136,7 +136,9 @@ async def test_generate_image_raises() -> None:
 @pytest.mark.asyncio
 async def test_complete_simple() -> None:
     provider = CodexProvider()
-    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
+    messages = [
+        Message(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     model = _make_model()
     resp = await provider.complete(messages, model, timeout=60.0)
     assert isinstance(resp, Response)
@@ -165,7 +167,9 @@ async def test_complete_structured() -> None:
 @pytest.mark.asyncio
 async def test_stream_simple() -> None:
     provider = CodexProvider()
-    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
+    messages = [
+        Message(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     model = _make_model()
     chunks: list[str] = []
     async for chunk in provider.stream(messages, model, timeout=60.0):
@@ -174,3 +178,52 @@ async def test_stream_simple() -> None:
     assert len(chunks) > 0
     full = "".join(chunks)
     assert "4" in full
+
+
+@pytest.mark.asyncio
+async def test_stream_timeout_reaps_real_codex_process() -> None:
+    provider = CodexProvider()
+    messages = [
+        Message(
+            role="user",
+            content="Write a detailed analysis that cannot complete instantly.",
+        )
+    ]
+    model = _make_model()
+
+    async def consume() -> None:
+        async for _ in provider.stream(messages, model, timeout=0.75):
+            pass
+
+    task = asyncio.create_task(consume())
+    child_pid = 0
+    for _ in range(50):
+        process_list = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,comm="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        codex_rows = []
+        for row in process_list.stdout.splitlines():
+            fields = row.strip().split(maxsplit=2)
+            if (
+                len(fields) == 3
+                and int(fields[1]) == os.getpid()
+                and Path(fields[2]).name == "codex"
+            ):
+                codex_rows.append(fields)
+        if codex_rows:
+            child_pid = int(codex_rows[0][0])
+            break
+        try:
+            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.01)
+        except TimeoutError:
+            pass
+
+    assert child_pid > 0
+    with pytest.raises(AgentError) as exc_info:
+        await task
+    assert exc_info.value.kind == ErrorKind.TIMEOUT
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)

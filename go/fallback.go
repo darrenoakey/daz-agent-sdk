@@ -193,23 +193,20 @@ func ExecuteWithFallback(
 				}
 			}
 
-			attempt := map[string]any{
-				"provider": providerEntry,
-				"tier":     tier,
-				"retry":    retry,
-			}
-
 			result, err := executeFn(providerEntry)
 			if err == nil {
-				attempt["success"] = true
-				attempts = append(attempts, attempt)
 				return result, nil
 			}
 
 			kind := ClassifyError(err)
-			attempt["error"] = err.Error()
-			attempt["kind"] = string(kind)
-			attempt["success"] = false
+			attempt := map[string]any{
+				"provider": providerEntry,
+				"tier":     tier,
+				"retry":    retry,
+				"error":    err.Error(),
+				"kind":     string(kind),
+				"success":  false,
+			}
 			attempts = append(attempts, attempt)
 
 			// AUTH and INVALID_REQUEST are caller bugs -- raise immediately

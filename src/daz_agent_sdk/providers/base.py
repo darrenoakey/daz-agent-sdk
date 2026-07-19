@@ -4,14 +4,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncIterator, Type
 
-from daz_agent_sdk.types import ImageResult, Message, ModelInfo, Response, StructuredResponse, T
+from daz_agent_sdk.types import Message, ModelInfo, Response, StructuredResponse, T
 
 
 # ##################################################################
 # provider
 # abstract base class for all AI providers — defines the interface
 # that every provider must implement for completion, streaming, and
-# model enumeration. image generation is optional (raises by default).
+# model enumeration. Image generation is a separate durable service capability.
 class Provider(ABC):
     name: str
 
@@ -63,19 +63,3 @@ class Provider(ABC):
         *,
         timeout: float = 300.0,
     ) -> AsyncIterator[str]: ...
-
-    # ##################################################################
-    # generate image
-    # generate an image from a text prompt. raises NotImplementedError
-    # for providers that do not support image generation — callers
-    # should check capabilities before calling.
-    async def generate_image(
-        self,
-        prompt: str,
-        *,
-        width: int,
-        height: int,
-        output: Path,
-        **kwargs,
-    ) -> ImageResult:
-        raise NotImplementedError(f"{self.name} does not support image generation")

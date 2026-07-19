@@ -91,7 +91,9 @@ func SynthesizeSpeech(ctx context.Context, text string, opts SpeakOpts) (*agents
 			return nil, fmt.Errorf("creating temp file: %w", err)
 		}
 		outputPath = tmpFile.Name()
-		tmpFile.Close()
+		if err := tmpFile.Close(); err != nil {
+			return nil, fmt.Errorf("closing temporary output file: %w", err)
+		}
 	} else {
 		dir := filepath.Dir(outputPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {

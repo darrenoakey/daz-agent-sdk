@@ -7,7 +7,14 @@ from pathlib import Path
 from uuid import UUID
 
 from daz_agent_sdk.logging_ import ConversationLogger
-from daz_agent_sdk.types import AgentError, AudioResult, Capability, ErrorKind, ModelInfo, Tier
+from daz_agent_sdk.types import (
+    AgentError,
+    AudioResult,
+    Capability,
+    ErrorKind,
+    ModelInfo,
+    Tier,
+)
 
 
 # ##################################################################
@@ -49,10 +56,14 @@ def _build_tts_command(
     return [
         "tts",
         "tts",
-        "--text", text,
-        "--voice", voice,
-        "--output", str(output),
-        "--speed", str(speed),
+        "--text",
+        text,
+        "--voice",
+        voice,
+        "--output",
+        str(output),
+        "--speed",
+        str(speed),
     ]
 
 

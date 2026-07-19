@@ -88,13 +88,13 @@ Llm.chat_structured_static(prompt, schema, model_type=ModelType.LOCAL_LARGE)
 
 ---
 
-## Part 2: Image Generation
+## Part 2: Still-Image Generation and Editing
 
-### 2.1 Local Diffusion (mflux)
+### 2.1 Required production path
 
-Primary tool: `~/bin/generate_image` → `/Volumes/T9/darrenoakey/src/mflux/generate_image.py`
+Every still-image generation or edit uses `~/bin/generate_image`, which submits a durable Codex job to the single Mac mini `image_generation_service` (IGS). The SDK itself never selects or dispatches a backing image model. Every client is hard-pinned to `http://10.0.0.46:8830`; no caller, environment variable, host detection, or configuration can select another origin.
 
-**Models:** Flux1, Flux2-Klein, Krea, Qwen, Z-Image
+The only accepted SDK provider selector is omitted or `codex`. Spark, Arbiter, Flux, Z-Image, Ollama, Gemini/Nano Banana, direct OpenAI, and explicit image model or step pins fail closed. There is no image-provider fallback.
 
 | Project | Path | Dimensions | Use Case |
 |---------|------|-----------|----------|
@@ -107,36 +107,17 @@ Primary tool: `~/bin/generate_image` → `/Volumes/T9/darrenoakey/src/mflux/gene
 | **auto-dev** | ~/src/auto-dev | 1920x1080, 512x512 | Hero images, project icons |
 | **portfolio** | ~/src/portfolio | 512x512 | Project thumbnails (fallback) |
 
-**Parameters:** `--prompt, --width, --height, --output, --model, --steps, --guidance, --seed, --transparent, --image, --image-strength`
-
-**Invocation:** Always subprocess: `subprocess.run(["generate_image", "--prompt", ..., "--width", ..., "--height", ..., "--output", ...])`
+**Invocation:** Use `~/bin/generate_image` for user-facing image work, or the SDK's stable image capability when integrating this library. Both routes terminate at the same Mac mini IGS/Codex service.
 
 ### 2.2 Background Removal (BiRefNet)
 
 Tool: `~/bin/remove-background` → `/Volumes/T9/darrenoakey/src/background-removal/`
 
-Used by: auto-gui, auto-blog, mflux (--transparent flag)
+Used by: auto-gui and auto-blog. Background removal is permitted as non-generative processing of an existing image; it is not an alternative still-image generator.
 
-### 2.3 OpenAI DALL-E 3
+### 2.3 Retired direct backends
 
-| Project | Path | Interface | Use Case |
-|---------|------|-----------|----------|
-| **daz_assist** | ~/src/daz_assist | `openai.OpenAI().images.generate()` | Multi-backend image gen |
-| **generate_openai** | ~/bin/generate_openai | `openai.OpenAI().images.generate()` | Standalone CLI tool |
-
-### 2.4 Google Gemini Image Gen
-
-| Project | Path | Interface | Use Case |
-|---------|------|-----------|----------|
-| **daz_assist** | ~/src/daz_assist | Google Gemini API | Multi-backend image gen |
-
-### 2.5 daz_assist Multi-Backend
-
-`~/src/daz_assist` has a pluggable image generator with `ImageGeneratorBase` ABC:
-- `LocalImageGenerator` (mflux)
-- `OpenAIImageGenerator` (DALL-E)
-- `GeminiImageGenerator` (Google)
-- CLI: `--model {local|openai|gemini}`
+Older inventory snapshots found local diffusion, direct OpenAI, Gemini, and multi-backend image implementations. They are not valid integration guidance. New and migrated callers must use Mac mini IGS/Codex only, and the SDK must reject attempts to pin those retired providers or models.
 
 ---
 
@@ -197,7 +178,7 @@ Used by: **low-latency-voice** (~/src/low-latency-voice) — Swift implementatio
 | **LLM conversation** | Claude SDK (ClaudeSDKClient) | 5 projects | async context manager |
 | **LLM single-shot** | Claude SDK (query()) | 10 projects | async generator |
 | **LLM with tools** | Claude SDK + allowed_tools | 6 projects | tool list config |
-| **Image generation** | mflux, DALL-E, Gemini | 10 projects | subprocess / API |
+| **Still-image generation/editing** | Mac mini IGS/Codex | 10 projects | durable job API via `generate_image` or SDK |
 | **Background removal** | BiRefNet | 3 projects | subprocess |
 | **TTS** | Qwen3-TTS, Chatterbox, Kokoro | 6 projects | subprocess / library |
 | **STT** | Whisper, SFSpeechRecognizer | 2 projects | library / native |
@@ -210,7 +191,7 @@ Used by: **low-latency-voice** (~/src/low-latency-voice) — Swift implementatio
 3. **Caching is duplicated** — temporal_assistant, noveliser2, beezle all have their own cache
 4. **CLAUDECODE env stripping** — needed in every project running inside Claude Code
 5. **Model selection is hardcoded** — each project picks its own model string
-6. **Image generation is always subprocess** — no Python API, just shell out to generate_image
+6. **Image routing must remain singular** — all callers converge on Mac mini IGS/Codex; no provider-specific fallback
 7. **TTS is always subprocess** — no Python API, just shell out to ~/bin/tts
 8. **No unified error handling** — each project handles timeouts, rate limits differently
 9. **No unified budget/cost tracking** — only beezle tracks costs
@@ -243,17 +224,13 @@ Used by: **low-latency-voice** (~/src/low-latency-voice) — Swift implementatio
 - `tts` — Qwen3-TTS engine (MLX Audio)
 - `chatterbox` — Chatterbox TTS (HuggingFace/PyTorch)
 - `low-latency-voice` — macOS native STT/TTS + Claude
-- `mflux` — Image generation engine (local diffusion)
 - `background-removal` — BiRefNet background removal
-- `daz_assist` — Multi-backend image gen (local + DALL-E + Gemini)
+- Mac mini `image_generation_service` — sole still-image generation/editing backend, using logged-in Codex
 - `huanyuan-play` — TTS research (multi-engine)
 - `ltx2` — Video generation with audio conditioning
 
 ### ~/bin tools:
-- `generate_image` → mflux
-- `generate_flux` → mflux (Flux1 model)
-- `generate_z_image` → mflux (Z-Image model)
-- `generate_openai` → DALL-E 3
+- `generate_image` → durable Mac mini IGS/Codex job
 - `remove-background` → BiRefNet
 - `tts` → Qwen3-TTS
 - `tts-on-google` → Google Cloud TTS

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from daz_agent_sdk.types import (
@@ -10,18 +12,17 @@ from daz_agent_sdk.types import (
     StructuredResponse,
     Tier,
 )
-from daz_agent_sdk.providers.claude import ClaudeProvider, _classify_error, _build_prompt
+from daz_agent_sdk.providers.claude import (
+    ClaudeProvider,
+    _classify_error,
+    _build_prompt,
+)
 
 
 # ##################################################################
 # check if claude sdk is available
-# skip all integration tests if not installed
 def _sdk_available() -> bool:
-    try:
-        import claude_agent_sdk  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("claude_agent_sdk") is not None
 
 
 _HAS_SDK = _sdk_available()
@@ -46,7 +47,10 @@ def test_classify_timeout() -> None:
 
 
 def test_classify_invalid() -> None:
-    assert _classify_error(Exception("400 bad request invalid")) == ErrorKind.INVALID_REQUEST
+    assert (
+        _classify_error(Exception("400 bad request invalid"))
+        == ErrorKind.INVALID_REQUEST
+    )
 
 
 def test_classify_internal() -> None:
@@ -124,34 +128,25 @@ async def test_list_models_when_available() -> None:
 
 
 # ##################################################################
-# test generate image raises
-# claude does not support image generation
-@pytest.mark.asyncio
-async def test_generate_image_raises() -> None:
-    from pathlib import Path
-    provider = ClaudeProvider()
-    with pytest.raises(NotImplementedError):
-        await provider.generate_image("test", width=512, height=512, output=Path("/tmp/test.jpg"))
-
-
-# ##################################################################
 # integration tests
-# these talk to the real claude sdk — skip if not installed
-@pytest.mark.skipif(not _HAS_SDK, reason="claude_agent_sdk not installed")
+# these talk to the installed Claude SDK
 @pytest.mark.asyncio
 async def test_complete_simple() -> None:
+    assert _HAS_SDK, "claude_agent_sdk is not installed"
     provider = ClaudeProvider()
     models = await provider.list_models()
     haiku = next(m for m in models if m.tier == Tier.LOW)
-    messages = [Message(role="user", content="What is 2+2? Reply with just the number.")]
+    messages = [
+        Message(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     result = await provider.complete(messages, haiku, timeout=30.0)
     assert isinstance(result, Response)
     assert "4" in result.text
 
 
-@pytest.mark.skipif(not _HAS_SDK, reason="claude_agent_sdk not installed")
 @pytest.mark.asyncio
 async def test_complete_structured() -> None:
+    assert _HAS_SDK, "claude_agent_sdk is not installed"
     from pydantic import BaseModel
 
     class MathResult(BaseModel):
@@ -166,10 +161,10 @@ async def test_complete_structured() -> None:
     assert result.parsed.answer == 15
 
 
-@pytest.mark.skipif(not _HAS_SDK, reason="claude_agent_sdk not installed")
 @pytest.mark.asyncio
 async def test_complete_structured_complex() -> None:
     """Structured output with multiple fields via native output_format."""
+    assert _HAS_SDK, "claude_agent_sdk is not installed"
     from pydantic import BaseModel
 
     class Analysis(BaseModel):
@@ -180,7 +175,12 @@ async def test_complete_structured_complex() -> None:
     provider = ClaudeProvider()
     models = await provider.list_models()
     haiku = next(m for m in models if m.tier == Tier.LOW)
-    messages = [Message(role="user", content="Analyze the word 'hello'. Give a one-sentence summary, 3 keywords, and a friendliness score 1-10.")]
+    messages = [
+        Message(
+            role="user",
+            content="Analyze the word 'hello'. Give a one-sentence summary, 3 keywords, and a friendliness score 1-10.",
+        )
+    ]
     result = await provider.complete(messages, haiku, schema=Analysis, timeout=60.0)
     assert isinstance(result, StructuredResponse)
     assert isinstance(result.parsed, Analysis)
@@ -189,9 +189,9 @@ async def test_complete_structured_complex() -> None:
     assert 1 <= result.parsed.score <= 10
 
 
-@pytest.mark.skipif(not _HAS_SDK, reason="claude_agent_sdk not installed")
 @pytest.mark.asyncio
 async def test_stream_simple() -> None:
+    assert _HAS_SDK, "claude_agent_sdk is not installed"
     provider = ClaudeProvider()
     models = await provider.list_models()
     haiku = next(m for m in models if m.tier == Tier.LOW)

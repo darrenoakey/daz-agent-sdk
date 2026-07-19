@@ -78,7 +78,9 @@ def extract_result(
     _logger.info("structured: looking for %s in %s", filename, cwd)
     if os.path.isdir(cwd):
         contents = os.listdir(cwd)
-        _logger.info("structured: cwd contents (%d files): %s", len(contents), contents[:20])
+        _logger.info(
+            "structured: cwd contents (%d files): %s", len(contents), contents[:20]
+        )
     else:
         _logger.warning("structured: cwd does not exist: %s", cwd)
 
@@ -96,7 +98,9 @@ def extract_result(
             raise RuntimeError(
                 f"Structured output failed: file {filename} not written and response text is empty"
             )
-        _logger.info("structured: extracting from response text (%d chars)", len(response_text))
+        _logger.info(
+            "structured: extracting from response text (%d chars)", len(response_text)
+        )
         json_text = response_text.strip()
 
     # Parse and validate

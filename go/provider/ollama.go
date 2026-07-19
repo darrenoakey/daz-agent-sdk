@@ -109,8 +109,15 @@ func (o *OllamaProvider) Available(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return false, nil
+		}
+		return false, nil
+	}
+	if err := resp.Body.Close(); err != nil {
+		return false, nil
+	}
 	return resp.StatusCode == 200, nil
 }
 
@@ -120,8 +127,22 @@ type tagsResponse struct {
 }
 
 type tagModel struct {
-	Name    string         `json:"name"`
-	Details tagModelDetail `json:"details"`
+	Name         string         `json:"name"`
+	Details      tagModelDetail `json:"details"`
+	Capabilities []string       `json:"capabilities"`
+}
+
+func tagModelCapabilities(entry tagModel) ([]sdk.Capability, bool) {
+	embedding := false
+	completion := false
+	for _, capability := range entry.Capabilities {
+		embedding = embedding || capability == "embedding"
+		completion = completion || capability == "completion"
+	}
+	if embedding && !completion {
+		return []sdk.Capability{sdk.CapabilityEmbedding}, false
+	}
+	return []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured}, true
 }
 
 type tagModelDetail struct {
@@ -141,15 +162,22 @@ func (o *OllamaProvider) ListModels(ctx context.Context) ([]sdk.ModelInfo, error
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode != 200 {
+		if err := resp.Body.Close(); err != nil {
+			return nil, fmt.Errorf("closing /api/tags error response: %w", err)
+		}
 		return nil, fmt.Errorf("ollama /api/tags returned status %d", resp.StatusCode)
 	}
 
 	var data tagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return nil, fmt.Errorf("decoding /api/tags response: %v; closing response: %w", err, closeErr)
+		}
 		return nil, fmt.Errorf("failed to decode /api/tags response: %w", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("closing /api/tags response: %w", err)
 	}
 
 	var models []sdk.ModelInfo
@@ -172,17 +200,18 @@ func (o *OllamaProvider) ListModels(ctx context.Context) ([]sdk.ModelInfo, error
 		if paramSize != "" {
 			display = fmt.Sprintf("%s (%s)", display, paramSize)
 		}
+		capabilities, supportsChat := tagModelCapabilities(entry)
 
 		models = append(models, sdk.ModelInfo{
 			Provider:             "ollama",
 			ModelID:              modelID,
 			DisplayName:          display,
-			Capabilities:         []sdk.Capability{sdk.CapabilityText, sdk.CapabilityStructured},
+			Capabilities:         capabilities,
 			Tier:                 tier,
-			SupportsStreaming:    true,
-			SupportsStructured:  true,
-			SupportsConversation: true,
-			SupportsTools:       false,
+			SupportsStreaming:    supportsChat,
+			SupportsStructured:   supportsChat,
+			SupportsConversation: supportsChat,
+			SupportsTools:        false,
 		})
 	}
 	return models, nil
@@ -198,6 +227,24 @@ func buildMessages(messages []sdk.Message) []map[string]string {
 		}
 	}
 	return result
+}
+
+// normalizeStructuredResponse removes a markdown fence when Ollama wraps an
+// otherwise valid schema response despite receiving the format constraint.
+func normalizeStructuredResponse(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if json.Valid([]byte(trimmed)) || !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	firstNewline := strings.IndexByte(trimmed, '\n')
+	if firstNewline < 0 || !strings.HasSuffix(trimmed, "```") {
+		return trimmed
+	}
+	candidate := strings.TrimSpace(strings.TrimSuffix(trimmed[firstNewline+1:], "```"))
+	if json.Valid([]byte(candidate)) {
+		return candidate
+	}
+	return trimmed
 }
 
 // chatRequest is the JSON payload for /api/chat.
@@ -247,23 +294,41 @@ func (o *OllamaProvider) Complete(ctx context.Context, messages []sdk.Message, m
 		kind := classifyHTTPError(err)
 		return nil, sdk.NewAgentError(err.Error(), kind, nil)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode == 429 {
+		if err := resp.Body.Close(); err != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Ollama rate-limit response: %v", err), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("Ollama rate limit: %d", resp.StatusCode), sdk.ErrorRateLimit, nil)
 	}
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to read Ollama error response: %v", readErr), sdk.ErrorInternal, nil)
+		}
+		if closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Ollama error response: %v", closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("Ollama error %d: %s", resp.StatusCode, string(respBody)), sdk.ErrorInternal, nil)
 	}
 
 	var chatResp chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to decode response: %v; closing response: %v", err, closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("failed to decode response: %v", err), sdk.ErrorInternal, nil)
 	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, sdk.NewAgentError(fmt.Sprintf("failed to close response: %v", err), sdk.ErrorInternal, nil)
+	}
 
+	responseText := chatResp.Message.Content
+	if opts.Schema != nil {
+		responseText = normalizeStructuredResponse(responseText)
+	}
 	return &sdk.Response{
-		Text:           chatResp.Message.Content,
+		Text:           responseText,
 		ModelUsed:      model,
 		ConversationID: uuid.New(),
 		TurnID:         uuid.New(),
@@ -306,21 +371,34 @@ func (o *OllamaProvider) Stream(ctx context.Context, messages []sdk.Message, mod
 	}
 
 	if resp.StatusCode == 429 {
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			cancel()
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Ollama rate-limit response: %v", err), sdk.ErrorInternal, nil)
+		}
 		cancel()
 		return nil, sdk.NewAgentError(fmt.Sprintf("Ollama rate limit: %d", resp.StatusCode), sdk.ErrorRateLimit, nil)
 	}
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		respBody, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
 		cancel()
+		if readErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to read Ollama error response: %v", readErr), sdk.ErrorInternal, nil)
+		}
+		if closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Ollama error response: %v", closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("Ollama error %d: %s", resp.StatusCode, string(respBody)), sdk.ErrorInternal, nil)
 	}
 
 	ch := make(chan sdk.StreamChunk)
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				ch <- sdk.StreamChunk{Err: fmt.Errorf("closing Ollama stream response: %w", err)}
+			}
+		}()
 		defer cancel()
 
 		decoder := json.NewDecoder(resp.Body)

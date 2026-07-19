@@ -138,6 +138,42 @@ class ImageResult:
     prompt: str
     width: int
     height: int
+    job_id: str = ""
+    status: str = "done"
+    ready: bool = True
+    provider: str = "codex"
+    provenance: dict[str, Any] = field(default_factory=dict)
+    idempotency_key: str = ""
+    replayed: bool = False
+
+
+# ##################################################################
+# image submission
+# durable identity returned by the image service before generation completes
+@dataclass(frozen=True)
+class ImageSubmission:
+    job_id: str
+    idempotency_key: str
+    replayed: bool = False
+
+
+# ##################################################################
+# image job status
+# durable service state that can be inspected without submitting another job
+@dataclass(frozen=True)
+class ImageJobStatus:
+    job_id: str
+    status: str
+    ready: bool
+    model_used: ModelInfo
+    provider: str
+    attempts: int = 0
+    error: str = ""
+    prompt_version: int = 0
+    attempt_history: tuple[dict[str, Any], ...] = ()
+    created_at: str = ""
+    updated_at: str = ""
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 # ##################################################################
@@ -158,7 +194,6 @@ class AudioResult:
 # base error for all agent-sdk failures, carries structured context
 # for debugging including all provider attempts
 class AgentError(Exception):
-
     # ##################################################################
     # init
     # capture error kind and all provider attempts for diagnostics
@@ -211,6 +246,7 @@ def parse_json_from_llm(text: str) -> Any:
 
     # Try extracting JSON from markdown fences anywhere in the text
     import re
+
     fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if fence_match:
         try:
@@ -220,16 +256,16 @@ def parse_json_from_llm(text: str) -> Any:
 
     # Try finding the last JSON object in the text (scan backwards for '{')
     for i in range(len(text) - 1, -1, -1):
-        if text[i] == '}':
+        if text[i] == "}":
             # Found end of potential JSON, find matching opening brace
             depth = 0
             for j in range(i, -1, -1):
-                if text[j] == '}':
+                if text[j] == "}":
                     depth += 1
-                elif text[j] == '{':
+                elif text[j] == "{":
                     depth -= 1
                     if depth == 0:
-                        candidate = text[j:i + 1]
+                        candidate = text[j : i + 1]
                         try:
                             return json.loads(candidate)
                         except json.JSONDecodeError:
@@ -257,7 +293,9 @@ def validate_structured_json(schema: type[T], parsed_json: Any) -> T:
     # quirk 1: schema echo
     if isinstance(parsed_json, dict) and "properties" in parsed_json:
         props = parsed_json["properties"]
-        if isinstance(props, dict) and all(not isinstance(v, dict) for v in props.values()):
+        if isinstance(props, dict) and all(
+            not isinstance(v, dict) for v in props.values()
+        ):
             parsed_json = props
 
     try:
@@ -266,7 +304,7 @@ def validate_structured_json(schema: type[T], parsed_json: Any) -> T:
         # quirk 2: missing wrapper — only for single-list-field schemas
         fields = getattr(schema, "model_fields", {})
         if len(fields) == 1:
-            (field_name, field_info), = fields.items()
+            ((field_name, field_info),) = fields.items()
             annotation = field_info.annotation
             if get_origin(annotation) is list:
                 (item_type,) = get_args(annotation) or (None,)

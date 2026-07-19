@@ -20,7 +20,6 @@ _DEFAULT_LOG_BASE = Path.home() / ".agent-sdk" / "logs"
 # thread-safe: all file writes are protected by a lock
 # all io errors are swallowed — logging failures must never crash the caller
 class ConversationLogger:
-
     # ##################################################################
     # init
     # creates the conversation directory and writes initial meta.json
@@ -52,7 +51,9 @@ class ConversationLogger:
                 "model": model,
                 "created_at": _now_iso(),
             }
-            (self._log_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            (self._log_dir / "meta.json").write_text(
+                json.dumps(meta, indent=2), encoding="utf-8"
+            )
         except OSError:
             pass
 

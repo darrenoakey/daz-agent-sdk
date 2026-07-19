@@ -52,16 +52,16 @@ const (
 
 // ModelInfo describes a concrete model offered by a provider.
 type ModelInfo struct {
-	Provider              string       `json:"provider"`
-	ModelID               string       `json:"model_id"`
-	DisplayName           string       `json:"display_name"`
-	Capabilities          []Capability `json:"capabilities"`
-	Tier                  Tier         `json:"tier"`
-	SupportsStreaming      bool         `json:"supports_streaming"`
-	SupportsStructured    bool         `json:"supports_structured"`
-	SupportsConversation  bool         `json:"supports_conversation"`
-	SupportsTools         bool         `json:"supports_tools"`
-	MaxContext            *int         `json:"max_context,omitempty"`
+	Provider             string       `json:"provider"`
+	ModelID              string       `json:"model_id"`
+	DisplayName          string       `json:"display_name"`
+	Capabilities         []Capability `json:"capabilities"`
+	Tier                 Tier         `json:"tier"`
+	SupportsStreaming    bool         `json:"supports_streaming"`
+	SupportsStructured   bool         `json:"supports_structured"`
+	SupportsConversation bool         `json:"supports_conversation"`
+	SupportsTools        bool         `json:"supports_tools"`
+	MaxContext           *int         `json:"max_context,omitempty"`
 }
 
 // QualifiedName returns the provider:model_id format used in config files
@@ -107,12 +107,42 @@ type StructuredResponse struct {
 
 // ImageResult is the result of an image generation call.
 type ImageResult struct {
-	Path           string    `json:"path"`
-	ModelUsed      ModelInfo `json:"model_used"`
-	ConversationID uuid.UUID `json:"conversation_id"`
-	Prompt         string    `json:"prompt"`
-	Width          int       `json:"width"`
-	Height         int       `json:"height"`
+	Path           string         `json:"path"`
+	ModelUsed      ModelInfo      `json:"model_used"`
+	ConversationID uuid.UUID      `json:"conversation_id"`
+	Prompt         string         `json:"prompt"`
+	Width          int            `json:"width"`
+	Height         int            `json:"height"`
+	JobID          string         `json:"job_id"`
+	Status         string         `json:"status"`
+	Ready          bool           `json:"ready"`
+	Provider       string         `json:"provider"`
+	Provenance     map[string]any `json:"provenance,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	Replayed       bool           `json:"replayed"`
+}
+
+// ImageSubmission preserves the durable identity needed to recover an ambiguous POST.
+type ImageSubmission struct {
+	JobID          string `json:"job_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Replayed       bool   `json:"replayed"`
+}
+
+// ImageJobStatus preserves durable IGS state and attempt provenance.
+type ImageJobStatus struct {
+	JobID          string           `json:"job_id"`
+	Status         string           `json:"status"`
+	Ready          bool             `json:"ready"`
+	ModelUsed      ModelInfo        `json:"model_used"`
+	Provider       string           `json:"provider"`
+	Attempts       int              `json:"attempts"`
+	Error          string           `json:"error"`
+	PromptVersion  int              `json:"prompt_version"`
+	AttemptHistory []map[string]any `json:"attempt_history"`
+	CreatedAt      string           `json:"created_at"`
+	UpdatedAt      string           `json:"updated_at"`
+	Provenance     map[string]any   `json:"provenance"`
 }
 
 // EmbeddingResult is the result of an embed call. Embeddings are one
@@ -140,8 +170,8 @@ type AudioResult struct {
 // AgentError is the base error for all agent-sdk failures.
 // It carries structured context for debugging including all provider attempts.
 type AgentError struct {
-	Message  string         `json:"error"`
-	Kind     ErrorKind      `json:"kind"`
+	Message  string           `json:"error"`
+	Kind     ErrorKind        `json:"kind"`
 	Attempts []map[string]any `json:"attempts"`
 }
 

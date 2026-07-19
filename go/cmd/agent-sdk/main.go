@@ -15,11 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	sdk "github.com/darrenoakey/daz-agent-sdk/go"
 	"github.com/darrenoakey/daz-agent-sdk/go/capability"
 	"github.com/darrenoakey/daz-agent-sdk/go/provider"
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -105,6 +104,7 @@ func newAgent() *sdk.Agent {
 			Config:         opts.Config,
 			Logger:         opts.Logger,
 			ConversationID: uuid.New(),
+			IdempotencyKey: opts.IdempotencyKey,
 		})
 	}
 
@@ -162,7 +162,6 @@ func runAsk(args []string) int {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "Error: prompt is required")
 		fmt.Fprintln(os.Stderr, "Usage: agent-sdk ask \"prompt\" [--tier high]")
@@ -203,8 +202,11 @@ func runImage(args []string) int {
 	width := fs.Int("width", 512, "Image width in pixels")
 	height := fs.Int("height", 512, "Image height in pixels")
 	output := fs.String("output", "", "Output file path (default: temp file)")
-	provider := fs.String("provider", "", "Image provider (default: codex). 'spark', 'ollama', 'nano-banana-2'")
+	provider := fs.String("provider", "", "Image provider (only codex is enabled)")
 	transparent := fs.Bool("transparent", false, "Remove background after generation")
+	statePath := fs.String("state", "", "Crash-safe image submission state file")
+	idempotencyKey := fs.String("idempotency-key", "", "Durable image submission key")
+	recoverPath := fs.String("recover", "", "Recover a crash-safe image state file")
 	var images stringSliceFlag
 	fs.Var(&images, "image", "Input image file for editing/reference. Repeat to attach multiple images (codex only).")
 	fs.Var(&images, "i", "Alias for --image.")
@@ -212,23 +214,49 @@ func runImage(args []string) int {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
+	if normalized := strings.ToLower(strings.TrimSpace(*provider)); normalized != "" && normalized != "codex" {
+		fmt.Fprintf(os.Stderr, "Error: image provider %q is actively disabled; use the Mac mini Codex image service\n", *provider)
+		return 1
+	}
+	configuration, err := sdk.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if err := configuration.ValidateImageConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
 
-	if *prompt == "" {
+	if *prompt == "" && *recoverPath == "" {
 		fmt.Fprintln(os.Stderr, "Error: --prompt is required")
 		fmt.Fprintln(os.Stderr, "Usage: agent-sdk image --prompt \"...\" --width 512 --height 512 [--output path] [--image FILE ...] [--provider codex]")
 		return 1
 	}
+	ctx := context.Background()
+	if *recoverPath != "" {
+		if *output != "" {
+			fmt.Fprintln(os.Stderr, "Error: --output cannot mutate recovered image operation metadata")
+			return 1
+		}
+		result, err := capability.ResumeImageOperation(ctx, *recoverPath, configuration)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 1
+		}
+		fmt.Println(result.Path)
+		return 0
+	}
 
-	agent := newAgent()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	opts := sdk.ImageOpts{
-		Width:       *width,
-		Height:      *height,
-		Output:      *output,
-		Provider:    *provider,
-		Transparent: *transparent,
+	opts := capability.ImageOpts{
+		Width:          *width,
+		Height:         *height,
+		Output:         *output,
+		Provider:       *provider,
+		Transparent:    *transparent,
+		StatePath:      *statePath,
+		IdempotencyKey: *idempotencyKey,
+		Config:         configuration,
 	}
 	if len(images) == 1 {
 		opts.Image = images[0]
@@ -236,7 +264,7 @@ func runImage(args []string) int {
 		opts.Images = images
 	}
 
-	result, err := agent.Image(ctx, *prompt, opts)
+	result, err := capability.GenerateImage(ctx, *prompt, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1

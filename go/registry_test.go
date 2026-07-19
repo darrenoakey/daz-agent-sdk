@@ -9,9 +9,9 @@ func TestRegisterAndGetProvider(t *testing.T) {
 	RefreshProviders()
 	defer RefreshProviders()
 
-	// Register a fake provider
+	// Register a registry provider
 	RegisterProviderFactory("test_provider", func(cfg *Config) Provider {
-		return &fakeProvider{name: "test_provider"}
+		return &registryProvider{name: "test_provider"}
 	})
 
 	cfg, _ := LoadConfig("/nonexistent/path/config.yaml")
@@ -42,7 +42,7 @@ func TestGetProviderCached(t *testing.T) {
 	callCount := 0
 	RegisterProviderFactory("cached_test", func(cfg *Config) Provider {
 		callCount++
-		return &fakeProvider{name: "cached_test"}
+		return &registryProvider{name: "cached_test"}
 	})
 
 	cfg, _ := LoadConfig("/nonexistent/path/config.yaml")
@@ -63,10 +63,10 @@ func TestGetProviders(t *testing.T) {
 	defer RefreshProviders()
 
 	RegisterProviderFactory("prov_a", func(cfg *Config) Provider {
-		return &fakeProvider{name: "prov_a"}
+		return &registryProvider{name: "prov_a"}
 	})
 	RegisterProviderFactory("prov_b", func(cfg *Config) Provider {
-		return &fakeProvider{name: "prov_b"}
+		return &registryProvider{name: "prov_b"}
 	})
 
 	cfg, _ := LoadConfig("/nonexistent/path/config.yaml")
@@ -88,7 +88,7 @@ func TestRefreshProviders(t *testing.T) {
 	defer RefreshProviders()
 
 	RegisterProviderFactory("refresh_test", func(cfg *Config) Provider {
-		return &fakeProvider{name: "refresh_test"}
+		return &registryProvider{name: "refresh_test"}
 	})
 
 	cfg, _ := LoadConfig("/nonexistent/path/config.yaml")

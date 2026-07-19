@@ -8,7 +8,14 @@ from daz_agent_sdk.config import Config, get_tier_chain, load_config
 from daz_agent_sdk.logging_ import ConversationLogger
 from daz_agent_sdk.providers.base import Provider
 from daz_agent_sdk.registry import get_provider, resolve_model
-from daz_agent_sdk.types import Message, ModelInfo, Response, StructuredResponse, T, Tier
+from daz_agent_sdk.types import (
+    Message,
+    ModelInfo,
+    Response,
+    StructuredResponse,
+    T,
+    Tier,
+)
 
 
 # ##################################################################
@@ -23,7 +30,6 @@ from daz_agent_sdk.types import Message, ModelInfo, Response, StructuredResponse
 #       async for chunk in chat.stream("Write chapter 2"):
 #           print(chunk, end="", flush=True)
 class Conversation:
-
     # ##################################################################
     # init
     # set up a new conversation with optional name, tier, system prompt,
@@ -108,7 +114,11 @@ class Conversation:
         pname, mid = _split_entry(provider_entry)
         prov = _require_provider(pname)
         minfo = _require_model(pname, mid, effective_tier)
-        kwargs: dict[str, Any] = {"schema": schema, "timeout": timeout, "max_turns": max_turns}
+        kwargs: dict[str, Any] = {
+            "schema": schema,
+            "timeout": timeout,
+            "max_turns": max_turns,
+        }
         if self._mcp_servers is not None:
             kwargs["mcp_servers"] = self._mcp_servers
 
@@ -202,7 +212,9 @@ class Conversation:
     # ##################################################################
     # resolve provider model
     # find the explicit provider+model override or derive from tier chain
-    def _resolve_provider_model(self, tier: Tier) -> tuple[str | None, ModelInfo | None]:
+    def _resolve_provider_model(
+        self, tier: Tier
+    ) -> tuple[str | None, ModelInfo | None]:
         if self._provider_name and self._model_id:
             entry = f"{self._provider_name}:{self._model_id}"
             minfo = resolve_model(self._provider_name, self._model_id, tier=tier)
@@ -214,7 +226,9 @@ class Conversation:
     # produce an ordered list of provider:model entries for fallback.
     # if a single override entry is set it forms a one-element chain;
     # otherwise the tier config chain is used.
-    def _build_providers_chain(self, tier: Tier, override_entry: str | None) -> list[str]:
+    def _build_providers_chain(
+        self, tier: Tier, override_entry: str | None
+    ) -> list[str]:
         if override_entry is not None:
             return [override_entry]
         cfg = self._config or load_config()

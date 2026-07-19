@@ -1,6 +1,6 @@
 # daz-agent-sdk (Go)
 
-Go port of the daz-agent-sdk — provider-agnostic AI library with tier-based routing, automatic fallback, image generation, TTS, and STT.
+Go port of the daz-agent-sdk — provider-routed text, durable Codex image jobs, TTS, and STT.
 
 Shares the same `~/.daz-agent-sdk/config.yaml` as the Python version.
 
@@ -91,7 +91,7 @@ fmt.Println()
 
 ### Image Generation
 
-Uses Ollama with Z-Image-Turbo model locally — no API keys needed.
+Uses only the durable Mac mini Codex image service at `http://10.0.0.46:8830`. The origin is compiled in and cannot be supplied by a caller, environment variable, host detection, or configuration. Requests use the signed system `/usr/bin/curl` transport to avoid per-binary macOS Local Network denial without introducing another route. Legacy provider, model, and step pins fail closed.
 
 ```go
 import "github.com/darrenoakey/daz-agent-sdk/go/capability"
@@ -112,7 +112,27 @@ result, err := agent.Image(ctx, "a red apple on a white table", sdk.ImageOpts{
     Output: "/tmp/apple.png",
 })
 fmt.Println("Image saved to:", result.Path)
+fmt.Println("Durable job:", result.JobID, result.Status, result.Ready)
+fmt.Println("Submission identity:", result.IdempotencyKey, result.Replayed)
 ```
+
+When the local wait expires, `Ready` is false and the durable `JobID` remains recoverable. No alternate image provider is attempted.
+
+`GenerateImage` creates one UUID key when omitted and reuses the exact encoded body and key for bounded transport retries. Direct asynchronous submission uses `capability.SubmitImageJob` and requires `ImageOpts.IdempotencyKey`. Structured `409` and `410` failures retain the original job ID and key in `AgentError.Attempts`.
+
+```go
+status, err := capability.GetImageJob(ctx, result.JobID)
+result, err = capability.ResumeImageJob(ctx, status.JobID, capability.ImageJobOpts{
+    Output: "/tmp/apple.png",
+    Timeout: 10 * time.Minute,
+})
+// For an already-complete job:
+result, err = capability.DownloadImageJob(ctx, status.JobID, "/tmp/apple.png", false)
+```
+
+These recovery APIs issue only `GET /jobs/{id}` and `GET /jobs/{id}/image`; they preserve service provider and attempt provenance and never submit or fall back.
+
+For crash-safe CLI submission and recovery, use `--state FILE`, optional `--idempotency-key KEY`, and `--recover FILE`. The versioned `0600` state is atomically synced before POST and records the job ID before polling.
 
 ### Text-to-Speech
 
@@ -218,9 +238,10 @@ go/
   agent.go          — Agent: Ask, Conversation, Image, Speak, Transcribe, Models
   structured.go     — JSON extraction from LLM responses, schema instructions
   provider/
-    ollama.go       — Ollama HTTP provider (text + image)
+    ollama.go       — Ollama HTTP text provider
   capability/
-    image.go        — Image generation via Ollama (Z-Image-Turbo)
+    image.go        — Codex image-service routing and validation
+    image_codex.go  — durable `/jobs` service client
     tts.go          — Text-to-speech via tts CLI subprocess
     stt.go          — Speech-to-text via whisper CLI subprocess
   cmd/
@@ -234,9 +255,9 @@ Models are organized into tiers, each with a fallback chain:
 
 | Tier | Models |
 |------|--------|
-| `very_high` | claude-opus-4-6, gpt-5.3-codex, gemini-2.5-pro |
-| `high` | claude-opus-4-6, gpt-5.3-codex, gemini-2.5-pro |
-| `medium` | claude-sonnet-4-6, gpt-4.1, gemini-2.5-flash |
+| `very_high` | claude-opus-4-6, gpt-5.6-sol, gemini-2.5-pro |
+| `high` | claude-opus-4-6, gpt-5.6-sol, gemini-2.5-pro |
+| `medium` | claude-sonnet-4-6, gpt-5.6-sol, gemini-2.5-flash |
 | `low` | claude-haiku-4-5, gemini-2.5-flash-lite, qwen3-8b |
 | `free_fast` | qwen3-8b (Ollama) |
 | `free_thinking` | qwen3-30b-32k, deepseek-r1:14b (Ollama) |
@@ -251,7 +272,7 @@ Reads `~/.daz-agent-sdk/config.yaml` (same file as the Python version):
 tiers:
   high:
     - claude:claude-opus-4-6
-    - codex:gpt-5.3-codex
+    - codex:gpt-5.6-sol
     - gemini:gemini-2.5-pro
   low:
     - ollama:qwen3-8b
@@ -259,22 +280,16 @@ tiers:
 providers:
   ollama:
     base_url: http://localhost:11434
-
-image:
-  model: z-image-turbo
-  tiers:
-    high:
-      steps: 3
-    low:
-      steps: 2
 ```
+
+There is no image backend configuration. Legacy `image.model`, `image.tiers`, and `image.fallback` values may still parse for compatibility but never affect dispatch.
 
 ## Comparison with Python SDK
 
 | Feature | Python | Go |
 |---------|--------|----|
 | Text generation | All providers | Ollama (others coming) |
-| Image generation | mflux Z-Image-Turbo | Ollama Z-Image-Turbo |
+| Image generation | Mac mini Codex durable jobs | Mac mini Codex durable jobs |
 | TTS | `tts` subprocess | `tts` subprocess |
 | STT | `whisper` subprocess | `whisper` subprocess |
 | Background removal | BiRefNet (inline) | Not yet supported |
@@ -295,7 +310,7 @@ image:
 # Quick tests (skips slow integration tests)
 go test ./... -short
 
-# Full tests (requires Ollama running with models)
+# Full tests (live text-provider tests may require their services)
 go test ./... -v
 
 # Vet

@@ -1,14 +1,23 @@
-__version__ = "0.2.16"
+__version__ = "0.2.17"
 
 from daz_agent_sdk.conversation import Conversation
 from daz_agent_sdk.core import Agent
+from daz_agent_sdk.capabilities.image import (
+    download_image_job,
+    get_image_job,
+    resume_image_job,
+    resume_image_operation,
+    submit_image_job,
+)
 from daz_agent_sdk.types import (
     AgentError,
     AudioResult,
     Capability,
     EmbeddingResult,
     ErrorKind,
+    ImageJobStatus,
     ImageResult,
+    ImageSubmission,
     Message,
     ModelInfo,
     Response,
@@ -27,11 +36,18 @@ __all__ = [
     "Conversation",
     "EmbeddingResult",
     "ErrorKind",
+    "ImageJobStatus",
     "ImageResult",
+    "ImageSubmission",
     "Message",
     "ModelInfo",
     "Response",
     "StructuredResponse",
     "Tier",
     "agent",
+    "download_image_job",
+    "get_image_job",
+    "resume_image_job",
+    "resume_image_operation",
+    "submit_image_job",
 ]

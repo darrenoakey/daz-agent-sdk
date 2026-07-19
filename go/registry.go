@@ -143,11 +143,11 @@ func ResolveModel(providerName, modelID string, tier *Tier, cfg *Config) *ModelI
 	}
 
 	info := ModelInfo{
-		Provider:    providerName,
-		ModelID:     modelID,
-		DisplayName: providerName + "/" + modelID,
+		Provider:     providerName,
+		ModelID:      modelID,
+		DisplayName:  providerName + "/" + modelID,
 		Capabilities: []Capability{CapabilityText},
-		Tier:        *tier,
+		Tier:         *tier,
 	}
 
 	modelCacheMu.Lock()

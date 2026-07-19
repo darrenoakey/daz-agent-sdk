@@ -34,7 +34,7 @@ _model_cache: dict[str, ModelInfo] = {}
 # load provider
 # attempt to import a provider module by name — returns None if
 # the module is not installed or fails to load. never raises.
-def _load_provider(name: str) -> Provider | None:
+def _load_provider(name: str, config: Config | None = None) -> Provider | None:
     module_path = _PROVIDER_MODULES.get(name)
     if module_path is None:
         return None
@@ -58,7 +58,7 @@ def _load_provider(name: str) -> Provider | None:
         provider_class: Any = cls
         # pass base_url from config if the provider accepts it
         try:
-            cfg = load_config()
+            cfg = config or load_config()
             provider_cfg = cfg.providers.get(name, {})
             base_url = provider_cfg.get("base_url")
             if base_url is not None:

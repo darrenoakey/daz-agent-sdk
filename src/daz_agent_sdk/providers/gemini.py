@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, AsyncIterator, Type
 from uuid import uuid4
 
 from daz_agent_sdk.providers.base import Provider
-from daz_agent_sdk.structured import extract_result, schema_filename, schema_instructions
+from daz_agent_sdk.structured import (
+    extract_result,
+    schema_filename,
+    schema_instructions,
+)
 from daz_agent_sdk.types import (
     AgentError,
     Capability,
@@ -30,7 +35,9 @@ _GEMINI_MODELS = [
         provider="gemini",
         model_id="gemini-2.5-pro",
         display_name="Gemini 2.5 Pro",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
+        capabilities=frozenset(
+            {Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}
+        ),
         tier=Tier.HIGH,
         supports_streaming=True,
         supports_structured=True,
@@ -41,7 +48,9 @@ _GEMINI_MODELS = [
         provider="gemini",
         model_id="gemini-2.5-flash",
         display_name="Gemini 2.5 Flash",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
+        capabilities=frozenset(
+            {Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}
+        ),
         tier=Tier.MEDIUM,
         supports_streaming=True,
         supports_structured=True,
@@ -63,13 +72,58 @@ _GEMINI_MODELS = [
 
 
 # ##################################################################
+# find gemini cli
+# locate the executable even when a non-login process lacks Homebrew
+# and user package directories on PATH
+def _find_gemini_cli(search_path: str | None = None) -> str | None:
+    executable = shutil.which("gemini", path=search_path)
+    if executable is not None:
+        return executable
+    home = Path.home()
+    candidates = (
+        Path("/opt/homebrew/bin/gemini"),
+        Path("/usr/local/bin/gemini"),
+        home / ".npm-global/bin/gemini",
+        home / ".local/bin/gemini",
+        home / "node_modules/.bin/gemini",
+    )
+    return next(
+        (
+            str(candidate)
+            for candidate in candidates
+            if candidate.is_file() and os.access(candidate, os.X_OK)
+        ),
+        None,
+    )
+
+
+# ##################################################################
+# gemini process environment
+# preserve the caller environment while making the discovered CLI's
+# sibling runtime reachable by env-based executable launchers
+def _gemini_process_environment(executable: str) -> dict[str, str]:
+    environment = os.environ.copy()
+    current_path = environment.get("PATH", "")
+    environment["PATH"] = os.pathsep.join(
+        part for part in (str(Path(executable).parent), current_path) if part
+    )
+    return environment
+
+
+# ##################################################################
 # classify error
 # map gemini CLI error messages to our error kinds for fallback decisions
 def _classify_error(err: Exception) -> ErrorKind:
     msg = str(err).lower()
     if "429" in msg or "quota" in msg or "rate" in msg or "resource_exhausted" in msg:
         return ErrorKind.RATE_LIMIT
-    if "401" in msg or "403" in msg or "api_key" in msg or "permission" in msg or "unauthenticated" in msg:
+    if (
+        "401" in msg
+        or "403" in msg
+        or "api_key" in msg
+        or "permission" in msg
+        or "unauthenticated" in msg
+    ):
         return ErrorKind.AUTH
     # google retired Gemini Code Assist for individuals — the CLI hard-fails at
     # auth with IneligibleTierError until the account migrates to Antigravity.
@@ -102,12 +156,24 @@ def _build_prompt(messages: list[Message]) -> str:
 # ##################################################################
 # run gemini subprocess
 # pipe prompt via stdin, return (stdout, stderr, returncode)
-async def _run_gemini(prompt: str, model_id: str, output_format: str, timeout: float) -> tuple[str, str, int]:
+async def _run_gemini(
+    prompt: str, model_id: str, output_format: str, timeout: float
+) -> tuple[str, str, int]:
+    executable = _find_gemini_cli()
+    if executable is None:
+        raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)
     proc = await asyncio.create_subprocess_exec(
-        "gemini", "-p", "", "-m", model_id, "-o", output_format,
+        executable,
+        "-p",
+        "",
+        "-m",
+        model_id,
+        "-o",
+        output_format,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_gemini_process_environment(executable),
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -116,7 +182,9 @@ async def _run_gemini(prompt: str, model_id: str, output_format: str, timeout: f
         )
     except asyncio.TimeoutError:
         proc.kill()
-        raise AgentError(f"gemini request timed out after {timeout}s", kind=ErrorKind.TIMEOUT)
+        raise AgentError(
+            f"gemini request timed out after {timeout}s", kind=ErrorKind.TIMEOUT
+        )
     return stdout_bytes.decode(), stderr_bytes.decode(), proc.returncode or 0
 
 
@@ -129,9 +197,9 @@ class GeminiProvider(Provider):
 
     # ##################################################################
     # available
-    # check if gemini CLI is on PATH
+    # check if gemini CLI is installed in a discoverable executable location
     async def available(self) -> bool:
-        return shutil.which("gemini") is not None
+        return _find_gemini_cli() is not None
 
     # ##################################################################
     # list models
@@ -155,9 +223,10 @@ class GeminiProvider(Provider):
         max_turns: int = 1,
         max_tokens: int | None = None,
         timeout: float = 300.0,
-        setting_sources: list[str] | tuple[str, ...] | None = None,  # noqa: ARG002 - claude-only lean-env knob
+        setting_sources: list[str] | tuple[str, ...] | None = None,
     ) -> Response | StructuredResponse:
-        if shutil.which("gemini") is None:
+        _ = setting_sources
+        if _find_gemini_cli() is None:
             raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
         prompt = _build_prompt(messages)
@@ -172,20 +241,27 @@ class GeminiProvider(Provider):
         turn_id = uuid4()
 
         try:
-            stdout, stderr, returncode = await _run_gemini(prompt, model.model_id, "json", timeout)
+            stdout, stderr, returncode = await _run_gemini(
+                prompt, model.model_id, "json", timeout
+            )
         except AgentError:
             raise
         except Exception as err:
             raise AgentError(str(err), kind=_classify_error(err)) from err
 
         if returncode != 0 and not stdout.strip():
-            raise AgentError(f"gemini exited with code {returncode}: {stderr}", kind=ErrorKind.INTERNAL)
+            raise AgentError(
+                f"gemini exited with code {returncode}: {stderr}",
+                kind=ErrorKind.INTERNAL,
+            )
 
         # parse JSON response: {"response": "text", "stats": {...}}
         try:
             data = json.loads(stdout)
         except json.JSONDecodeError as exc:
-            raise AgentError(f"Failed to parse gemini JSON output: {exc}", kind=ErrorKind.INTERNAL) from exc
+            raise AgentError(
+                f"Failed to parse gemini JSON output: {exc}", kind=ErrorKind.INTERNAL
+            ) from exc
 
         response_text = data.get("response", "")
         usage: dict[str, Any] = {}
@@ -204,14 +280,18 @@ class GeminiProvider(Provider):
 
         if schema is not None:
             import tempfile
+
             # Gemini can't write files — extract from response text using shared logic
             tmp_dir = tempfile.mkdtemp(prefix="gemini-structured-")
             try:
-                parsed_obj = extract_result(schema, out_filename or "", tmp_dir, response_text)
+                parsed_obj = extract_result(
+                    schema, out_filename or "", tmp_dir, response_text
+                )
             except Exception as exc:
                 raise AgentError(str(exc), kind=ErrorKind.INTERNAL) from exc
             finally:
                 import shutil as _shutil
+
                 _shutil.rmtree(tmp_dir, ignore_errors=True)
             return StructuredResponse(
                 text=response_text,
@@ -240,15 +320,23 @@ class GeminiProvider(Provider):
         *,
         timeout: float = 300.0,
     ) -> AsyncIterator[str]:
-        if shutil.which("gemini") is None:
+        executable = _find_gemini_cli()
+        if executable is None:
             raise AgentError("gemini CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
         prompt = _build_prompt(messages)
         proc = await asyncio.create_subprocess_exec(
-            "gemini", "-p", "", "-m", model.model_id, "-o", "stream-json",
+            executable,
+            "-p",
+            "",
+            "-m",
+            model.model_id,
+            "-o",
+            "stream-json",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_gemini_process_environment(executable),
         )
         assert proc.stdin is not None
         assert proc.stdout is not None
@@ -272,7 +360,9 @@ class GeminiProvider(Provider):
                 elif event_type == "result":
                     status = event.get("status", "")
                     if status != "success":
-                        raise AgentError(f"gemini stream failed: {status}", kind=ErrorKind.INTERNAL)
+                        raise AgentError(
+                            f"gemini stream failed: {status}", kind=ErrorKind.INTERNAL
+                        )
         except AgentError:
             raise
         except Exception as err:
@@ -283,17 +373,3 @@ class GeminiProvider(Provider):
             except ProcessLookupError:
                 pass
             await proc.wait()
-
-    # ##################################################################
-    # generate image
-    # gemini does not support image generation via this provider
-    async def generate_image(
-        self,
-        prompt: str,
-        *,
-        width: int,
-        height: int,
-        output: Path,
-        **kwargs: Any,
-    ) -> Any:
-        raise NotImplementedError("gemini does not support image generation")

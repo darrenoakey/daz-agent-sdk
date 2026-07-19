@@ -36,11 +36,11 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 
 | Capability | Module |
 |------------|--------|
-| Image | `capabilities/image.py` — Spark (default, CUDA FLUX.1-schnell on spark:8100), mflux Z-Image-Turbo (local Apple Silicon), Nano Banana 2 (Gemini API), inline BiRefNet background removal |
+| Image | `capabilities/image.py` — durable Mac mini Codex image-service `/jobs` client; no image-provider fallback |
 | TTS | `capabilities/tts.py` — subprocess to `tts` |
 | STT | `capabilities/stt.py` — subprocess to `whisper` |
 
-## Auth Policy — NO API KEYS (except Nano Banana 2)
+## Auth Policy — NO API KEYS
 
 **CRITICAL**: This project does NOT use API keys for Claude, Codex, or Gemini text providers. All three use ambient/subscription auth:
 - **Claude** — wraps `claude` CLI via `claude_agent_sdk` (Python) or subprocess (Go). Uses the logged-in Claude subscription. No `ANTHROPIC_API_KEY`.
@@ -48,8 +48,6 @@ Provider-agnostic AI library with tier-based routing and automatic fallback.
 - **Gemini text** — wraps `gemini` CLI. Uses Google auth. No `GEMINI_API_KEY` for text.
 - **Ollama** — local HTTP, no auth at all.
 - **Arbiter** — spark arbiter HTTP, no auth. The arbiter is the GPU job server on the spark machine (GB10 CUDA, 128 GB unified mem) at `10.0.0.254:8400`. Its `/v1/chat/completions` endpoint is OpenAI-compatible and proxies to vLLM-served LLMs (`qwen3.6-27b` default, `gemma4-31b`, `gemma4-26b`).
-
-The ONLY exception is **Nano Banana 2 image generation** which uses `GEMINI_API_KEY` for the Gemini API (image gen is not available via CLI).
 
 The Go OpenAI provider uses `OPENAI_API_KEY` because it calls the API directly (no codex CLI wrapper in Go). This is the one text provider exception in Go.
 
@@ -65,25 +63,17 @@ The Go OpenAI provider uses `OPENAI_API_KEY` because it calls the API directly (
 - Published as pip package: `pip install -e .` for local dev, `pyproject.toml` with setuptools
 - `./run install` command installs editable package system-wide
 - 15 projects converted from claude_agent_sdk/dazllm to daz-agent-sdk (see AI_USAGE_INVENTORY.md for full list)
-- Image generation: `provider=None` / `provider="codex"` routes through the always-on mac mini image generation service at `http://10.0.0.46:8830` (`POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/image`). Do not shell out to Codex CLI, mflux, or arbiter directly for normal image generation on this machine.
+- Image generation: `provider=None` / `provider="codex"` routes only to the always-on Mac mini image generation service at `http://10.0.0.46:8830`. The contract is `POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/image`; callers cannot override the origin.
 - The mac mini service is the shared image path for ltx2, `~/bin/generate_image`, and `~/publish`. It returns PNG bytes and handles source images through uploaded base64 `source_images`. JPEG callers are converted locally after the service returns PNG.
-- Legacy Codex CLI image code remains in `capabilities/image.py` for reference, but default SDK dispatch must not use it. Old notes about `codex exec`, `~/.codex/generated_images`, and `image_gen.imagegen` are historical debugging context only.
-- Image model selection: `model=` parameter picks between `z-image-turbo` and `flux-schnell` on spark; priority: explicit > `cfg.image.model` > `"z-image-turbo"` default. `ImageResult.model_used.model_id` reflects actual model
-- Image fallback refactor: `_generate_one()` dispatches per-provider, `generate_image()` loops `[primary] + fallbacks`. Each provider handles its own transparency
-- Spark image server runs on spark (GB10 CUDA) via arbiter (`spark:8400` for jobs, `spark:8100` for direct image gen)
-- Background removal (`transparent=True`): spark provider submits `background-remove` job to arbiter (BiRefNet on GPU); mflux provider runs BiRefNet locally (CPU); arbiter returns result in `result.data` (not `result.image`)
-- Local BiRefNet fallback requires `pip install "daz-agent-sdk[transparent]"` (torch, torchvision, transformers, einops, kornia, timm)
-- BiRefNet model cached as module-level singleton (`_birefnet_model`), loaded with `.float()` for CPU compatibility
+- Image provider/model/step pins for Spark, Arbiter, Flux, Z-Image, Ollama, Gemini/Nano Banana, and direct OpenAI fail closed. Image config fallback entries are parsed only for backward compatibility and never dispatched.
+- `ImageResult.job_id`, `status`, and `ready` expose durable state. A local wait timeout returns `ready=False` without cancelling or replacing the server job.
+- `get_image_job`, `resume_image_job`, and `download_image_job` recover existing IDs using GET-only IGS routes and retain provider/attempt provenance. Go exposes the equivalent `capability.GetImageJob`, `ResumeImageJob`, and `DownloadImageJob` APIs.
 - `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally
 - Claude provider uses native `output_format` for structured output — SDK injects a `StructuredOutput` tool, data comes back in `ToolUseBlock(name='StructuredOutput', input={...})`. Falls back to parsing response text if native output unavailable
 - Claude provider `_collect_response` returns `(text, structured_output)` tuple — captures `ResultMessage.result`, `ResultMessage.structured_output`, and `StructuredOutput` tool calls
-- mflux Z-Image-Turbo uses `ZImageTurbo` from `mflux.models.z_image` (NOT `Flux1` — that's for FLUX.1 schnell/dev only). `generate_image()` returns `GeneratedImage` (not PIL), save with `.save(path=..., overwrite=True)`
-- Exclude `image_test.py` from normal test runs (`--ignore`) — mflux test downloads multi-GB model
 - Codex JSONL events: `item.completed` with `item.type=="agent_message"` carries response text; `turn.failed` and `error` events carry error messages; pipe prompt via stdin with `codex exec - --json -m MODEL -s read-only --ephemeral`
 - Gemini CLI JSON: `-o json` returns `{"response": "text", "stats": {...}}`; `-o stream-json` emits JSONL with `type=message role=assistant` for chunks and `type=result` for completion
 - Codex models with ChatGPT auth: `gpt-5.3-codex` works, `o4-mini` and `gpt-4.1-nano` do NOT; `gpt-4.1` works
-- mflux package lacks `py.typed` marker — pyright can't resolve imports statically; use `# pyright: ignore[reportMissingImports]` on mflux import lines
-- mflux generation uses system-wide `fcntl.flock` at `/tmp/daz-agent-sdk-mflux.lock` — only one generation across all processes at a time
 - Package ships `py.typed` (PEP 561) — callers get full type info; `pyproject.toml` has `[tool.setuptools.package-data]` to include it in wheel
 - `./run deploy` handles version bump automatically — don't bump version manually before running it
 
@@ -95,9 +85,8 @@ Full Go implementation in `go/` directory. See `go/README.md` for complete docum
 - **Vet**: `cd go && go vet ./...`
 - **Build CLI**: `cd go/cmd/agent-sdk && go build -o agent-sdk .`
 - **Module**: `github.com/darrenoakey/daz-agent-sdk/go`
-- Image gen: Spark (default, CUDA on spark:8100), Ollama (local), Nano Banana 2 (Gemini API) — with fallback chain
-- Image model selection: `ImageOpts.Model` picks between `z-image-turbo` and `flux-schnell` on spark; priority: explicit > config > default
-- Background removal via arbiter (spark:8400) — `Agent.RemoveBackground()` and `Transparent` flag on image gen
+- Image generation: durable Mac mini Codex `/jobs` client only, hard-pinned to `http://10.0.0.46:8830` with no origin override or provider fallback
+- Legacy `ImageOpts.Provider`, `Model`, and `Steps` values fail closed; timeout results retain durable job state
 - Conversation.Say() accepts `WithSaySchema()` and `WithSayTier()` for structured output and per-call tier override
 - TTS/STT use same CLI subprocesses as Python (tts, whisper)
 - Provider interface in root package, implementations in `provider/` subpackage

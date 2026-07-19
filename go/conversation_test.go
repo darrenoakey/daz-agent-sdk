@@ -141,24 +141,9 @@ func TestConversation_HistoryReturnsCopy(t *testing.T) {
 }
 
 // TestConversation_SayOllama tests Say against a real Ollama instance.
-// Skipped with -short since it requires a running Ollama server.
 func TestConversation_SayOllama(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping Ollama integration test in short mode")
-	}
-
-	RegisterProviderFactory("ollama", func(cfg *Config) Provider {
-		baseURL := "http://localhost:11434"
-		if cfg != nil {
-			if p, ok := cfg.Providers["ollama"]; ok {
-				if u, ok := p["base_url"].(string); ok && u != "" {
-					baseURL = u
-				}
-			}
-		}
-		// Use a dynamic import to avoid circular dependency
-		// For integration tests, we rely on the provider being registered
-		// externally or use a simple HTTP-based provider
+	baseURL := configuredTestOllamaURL(t)
+	RegisterProviderFactory("ollama", func(_ *Config) Provider {
 		return newTestOllamaProvider(baseURL)
 	})
 	defer RefreshProviders()
@@ -166,7 +151,7 @@ func TestConversation_SayOllama(t *testing.T) {
 	conv := NewConversation("ollama-test",
 		WithTier(TierFreeFast),
 		WithProvider("ollama"),
-		WithModel("qwen3:8b"),
+		WithModel("llama3.2:3b"),
 	)
 	defer conv.Close()
 

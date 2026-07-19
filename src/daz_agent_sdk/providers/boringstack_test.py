@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import socket
+import json
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-import pytest_asyncio  # noqa: F401 — registers asyncio mode
 
 from daz_agent_sdk.providers.boringstack import BoringstackProvider
 from daz_agent_sdk.providers.ollama import OllamaProvider
@@ -14,28 +16,51 @@ from daz_agent_sdk.types import Message, Tier
 # ##################################################################
 # boringstack host
 # the dedicated remote Ollama box (Darren-Boringstack).
-_BORINGSTACK_HOST = "10.0.0.237"
+_BORINGSTACK_HOST = "10.0.0.42"
 _BORINGSTACK_PORT = 11434
 
 
-# ##################################################################
-# boringstack reachability check
-# probe at module level so the live generation test skips quickly when
-# the boringstack box is offline, rather than timing out per-test.
-def _boringstack_reachable() -> bool:
+class _BoringstackProtocolHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path != "/api/tags":
+            self.send_error(404)
+            return
+        self._send({"models": [{"name": "qwen3.6:35b-a3b"}]})
+
+    def do_POST(self) -> None:
+        if self.path != "/api/chat":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        request = json.loads(self.rfile.read(length))
+        assert request["model"] == "qwen3.6:35b-a3b"
+        self._send({"message": {"role": "assistant", "content": "pong"}})
+
+    def _send(self, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@pytest.fixture
+def boringstack_endpoint() -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _BoringstackProtocolHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
     try:
-        s = socket.create_connection((_BORINGSTACK_HOST, _BORINGSTACK_PORT), timeout=2)
-        s.close()
-        return True
-    except OSError:
-        return False
-
-
-BORINGSTACK_RUNNING = _boringstack_reachable()
-skip_if_offline = pytest.mark.skipif(
-    not BORINGSTACK_RUNNING,
-    reason=f"boringstack not reachable at {_BORINGSTACK_HOST}:{_BORINGSTACK_PORT}",
-)
+        host = str(server.server_address[0])
+        port = int(server.server_address[1])
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 # ##################################################################
@@ -69,16 +94,16 @@ def test_boringstack_in_registry() -> None:
 
 
 # ##################################################################
-# test live generation
-# real call against the qwen3.6:35b-a3b MoE on boringstack — no mocks.
-# skipped when the box is offline.
-@skip_if_offline
+# test protocol generation
+# exercise the real Ollama wire protocol through a local TCP server.
 @pytest.mark.asyncio
-async def test_boringstack_live_generation() -> None:
-    prov = BoringstackProvider()
+async def test_boringstack_protocol_generation(boringstack_endpoint: str) -> None:
+    prov = BoringstackProvider(base_url=boringstack_endpoint)
     assert await prov.available()
     model = resolve_model("boringstack", "qwen3.6:35b-a3b", tier=Tier.FREE_FAST)
     assert model is not None
-    messages = [Message(role="user", content="Reply with exactly the single word: pong")]
+    messages = [
+        Message(role="user", content="Reply with exactly the single word: pong")
+    ]
     response = await prov.complete(messages, model)
     assert response.text.strip()

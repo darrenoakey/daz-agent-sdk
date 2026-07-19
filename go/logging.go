@@ -134,8 +134,15 @@ func (cl *ConversationLogger) writeJSONL(entry map[string]any) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	_, _ = f.Write(line)
+	if _, err := f.Write(line); err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			return
+		}
+		return
+	}
+	if err := f.Close(); err != nil {
+		return
+	}
 }
 
 // nowISO returns the current UTC time as an ISO 8601 string.

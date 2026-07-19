@@ -51,14 +51,15 @@ type ImageCallOpts struct {
 	Output         string
 	Provider       string
 	Model          string
-	Image          string   // input image path for i2i (single)
-	Images         []string // input image paths for i2i (multiple — codex)
-	Steps          int      // inference steps override (0 = derive from tier)
+	Image          string   // input image path for a service-backed edit
+	Images         []string // multiple input image paths for a service-backed edit
+	Steps          int      // legacy field; non-zero values fail closed
 	Tier           Tier
 	Transparent    bool
 	Timeout        time.Duration
 	Config         *Config
 	Logger         *ConversationLogger
+	IdempotencyKey string
 }
 
 // RemoveBackgroundCallOpts holds parameters for background removal.
@@ -257,23 +258,27 @@ func (a *Agent) Conversation(name string, opts ...ConversationOption) *Conversat
 
 // ImageOpts holds optional parameters for Agent.Image.
 type ImageOpts struct {
-	Width       int
-	Height      int
-	Output      string
-	Provider    string   // "codex" (default), "spark", "ollama", "nano-banana-2"
-	Model       string   // "z-image-turbo", "flux-schnell", etc.
-	Image       string   // input image path for image-to-image (single)
-	Images      []string // input image paths (multiple — codex only)
-	Steps       int      // inference steps override (0 = derive from tier)
-	Tier        Tier
-	Transparent bool
-	Timeout     time.Duration
+	Width          int
+	Height         int
+	Output         string
+	Provider       string   // empty or "codex"; legacy image providers fail closed
+	Model          string   // retained for compatibility; non-empty values fail closed
+	Image          string   // input image path for image-to-image (single)
+	Images         []string // input image paths (multiple — codex only)
+	Steps          int      // retained for compatibility; non-zero values fail closed
+	Tier           Tier
+	Transparent    bool
+	Timeout        time.Duration
+	IdempotencyKey string
 }
 
 // Image generates an image from a text prompt. The ImageFn must be set
 // (typically by importing the capability package and calling its
 // registration function, or by the CLI).
 func (a *Agent) Image(ctx context.Context, prompt string, opts ImageOpts) (*ImageResult, error) {
+	if err := a.config.ValidateImageConfig(); err != nil {
+		return nil, err
+	}
 	if a.ImageFn == nil {
 		return nil, NewAgentError(
 			"image capability not registered; import capability package or set Agent.ImageFn",
@@ -281,18 +286,19 @@ func (a *Agent) Image(ctx context.Context, prompt string, opts ImageOpts) (*Imag
 		)
 	}
 	return a.ImageFn(ctx, prompt, ImageCallOpts{
-		Width:       opts.Width,
-		Height:      opts.Height,
-		Output:      opts.Output,
-		Provider:    opts.Provider,
-		Model:       opts.Model,
-		Image:       opts.Image,
-		Images:      opts.Images,
-		Steps:       opts.Steps,
-		Tier:        opts.Tier,
-		Transparent: opts.Transparent,
-		Timeout:     opts.Timeout,
-		Config:      a.config,
+		Width:          opts.Width,
+		Height:         opts.Height,
+		Output:         opts.Output,
+		Provider:       opts.Provider,
+		Model:          opts.Model,
+		Image:          opts.Image,
+		Images:         opts.Images,
+		Steps:          opts.Steps,
+		Tier:           opts.Tier,
+		Transparent:    opts.Transparent,
+		Timeout:        opts.Timeout,
+		Config:         a.config,
+		IdempotencyKey: opts.IdempotencyKey,
 	})
 }
 
@@ -301,19 +307,16 @@ type RemoveBackgroundOpts struct {
 	Timeout time.Duration
 }
 
-// RemoveBackground removes the background from an image using the arbiter
-// GPU service. Overwrites the image in-place with a PNG with alpha channel.
+// RemoveBackground is retained for compatibility and fails closed because all
+// still-image edits must use the durable Mac mini Codex image service.
 func (a *Agent) RemoveBackground(ctx context.Context, imagePath string, opts RemoveBackgroundOpts) (string, error) {
-	if a.RemoveBackgroundFn == nil {
-		return "", NewAgentError(
-			"remove_background capability not registered; import capability package or set Agent.RemoveBackgroundFn",
-			ErrorNotAvailable, nil,
-		)
+	if err := a.config.ValidateImageConfig(); err != nil {
+		return "", err
 	}
-	return a.RemoveBackgroundFn(ctx, imagePath, RemoveBackgroundCallOpts{
-		Timeout: opts.Timeout,
-		Config:  a.config,
-	})
+	return "", NewAgentError(
+		"background removal is actively disabled; use the durable Mac mini Codex image service for still-image edits",
+		ErrorInvalidRequest, nil,
+	)
 }
 
 // SpeakOpts holds optional parameters for Agent.Speak.
@@ -332,12 +335,7 @@ func (a *Agent) Speak(ctx context.Context, text string, opts SpeakOpts) (*AudioR
 			ErrorNotAvailable, nil,
 		)
 	}
-	return a.SpeakFn(ctx, text, SpeakCallOpts{
-		Voice:   opts.Voice,
-		Output:  opts.Output,
-		Speed:   opts.Speed,
-		Timeout: opts.Timeout,
-	})
+	return a.SpeakFn(ctx, text, SpeakCallOpts(opts))
 }
 
 // TranscribeOpts holds optional parameters for Agent.Transcribe.
@@ -355,11 +353,7 @@ func (a *Agent) Transcribe(ctx context.Context, audioPath string, opts Transcrib
 			ErrorNotAvailable, nil,
 		)
 	}
-	return a.TranscribeFn(ctx, audioPath, TranscribeCallOpts{
-		ModelSize: opts.ModelSize,
-		Language:  opts.Language,
-		Timeout:   opts.Timeout,
-	})
+	return a.TranscribeFn(ctx, audioPath, TranscribeCallOpts(opts))
 }
 
 // EmbedOpts holds optional parameters for Agent.Embed.

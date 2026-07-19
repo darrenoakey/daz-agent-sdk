@@ -2,6 +2,7 @@ package dazagentsdk
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,6 +23,17 @@ func TestNewAgent_WithConfig(t *testing.T) {
 	agent := NewAgent(cfg)
 	if agent.config != cfg {
 		t.Error("Agent.config should be the provided config")
+	}
+}
+
+func TestAgentRemoveBackgroundFailsClosed(t *testing.T) {
+	agent := NewAgent(nil)
+	agent.RemoveBackgroundFn = func(context.Context, string, RemoveBackgroundCallOpts) (string, error) {
+		return "alternate-route", nil
+	}
+	result, err := agent.RemoveBackground(context.Background(), "image.png", RemoveBackgroundOpts{})
+	if result != "" || err == nil || !strings.Contains(err.Error(), "actively disabled") || !strings.Contains(err.Error(), "durable Mac mini Codex image service") {
+		t.Fatalf("remove background result=%q error=%v", result, err)
 	}
 }
 
@@ -110,11 +122,10 @@ func TestWithAskMaxTurns_SetsMaxTurns(t *testing.T) {
 }
 
 func TestAskOptsPassedToCompleteOpts(t *testing.T) {
-	// Verify that tools, cwd, and maxTurns are wired into CompleteOpts by
-	// inspecting a fake provider that captures the opts it receives.
+	// Verify that tools, cwd, and maxTurns reach the concrete recording provider.
 	captured := &CompleteOpts{}
-	fake := &capturingProvider{capturedOpts: captured}
-	RegisterProviderFactory("capturing", func(cfg *Config) Provider { return fake })
+	recorder := &capturingProvider{capturedOpts: captured}
+	RegisterProviderFactory("capturing", func(cfg *Config) Provider { return recorder })
 	defer RefreshProviders()
 
 	cfg := &Config{}
@@ -147,7 +158,7 @@ type capturingProvider struct {
 	capturedOpts *CompleteOpts
 }
 
-func (p *capturingProvider) Name() string { return "capturing" }
+func (p *capturingProvider) Name() string                              { return "capturing" }
 func (p *capturingProvider) Available(_ context.Context) (bool, error) { return true, nil }
 func (p *capturingProvider) ListModels(_ context.Context) ([]ModelInfo, error) {
 	return []ModelInfo{{Provider: "capturing", ModelID: "test-model", Tier: TierHigh}}, nil
@@ -169,21 +180,9 @@ func TestDefaultAgent(t *testing.T) {
 }
 
 // TestAgent_AskOllama tests Ask against a real Ollama instance.
-// Skipped with -short since it requires a running Ollama server.
 func TestAgent_AskOllama(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping Ollama integration test in short mode")
-	}
-
-	RegisterProviderFactory("ollama", func(cfg *Config) Provider {
-		baseURL := "http://localhost:11434"
-		if cfg != nil {
-			if p, ok := cfg.Providers["ollama"]; ok {
-				if u, ok := p["base_url"].(string); ok && u != "" {
-					baseURL = u
-				}
-			}
-		}
+	baseURL := configuredTestOllamaURL(t)
+	RegisterProviderFactory("ollama", func(_ *Config) Provider {
 		return newTestOllamaProvider(baseURL)
 	})
 	defer RefreshProviders()
@@ -195,7 +194,7 @@ func TestAgent_AskOllama(t *testing.T) {
 	resp, err := agent.Ask(ctx, "Say hello in exactly one word.",
 		WithAskTier(TierFreeFast),
 		WithAskProvider("ollama"),
-		WithAskModel("qwen3:8b"),
+		WithAskModel("llama3.2:3b"),
 	)
 	if err != nil {
 		t.Fatalf("Ask() error: %v", err)

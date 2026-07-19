@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from typing import Any
 
 from daz_agent_sdk.config import load_config
 from daz_agent_sdk.core import Agent
@@ -12,9 +13,26 @@ from daz_agent_sdk.types import Tier
 # run image
 # generates an image and prints the output path
 async def _run_image(args: argparse.Namespace) -> int:
-    agent = Agent(load_config())
+    from daz_agent_sdk.capabilities.image import (
+        _validate_legacy_image_config,
+        _validate_image_route,
+        resume_image_operation,
+    )
+
+    config = load_config()
+    _validate_legacy_image_config(config)
+    _validate_image_route("validation", 1, 1, args.provider, None, None)
+    if args.recover:
+        result = await resume_image_operation(
+            args.recover, output=args.output, config=config
+        )
+        print(str(result.path))
+        return 0
+    if not args.prompt:
+        raise ValueError("--prompt is required unless --recover is used")
+    agent = Agent(config)
     output = args.output if args.output else None
-    from typing import Any
+
     images: list[str] = list(args.image) if args.image else []
     image_arg: Any
     if not images:
@@ -31,6 +49,8 @@ async def _run_image(args: argparse.Namespace) -> int:
         image=image_arg,
         transparent=args.transparent,
         provider=args.provider,
+        idempotency_key=args.idempotency_key,
+        operation_state=args.state,
     )
     print(str(result.path))
     return 0
@@ -83,18 +103,32 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # image
     img_p = sub.add_parser("image", help="Generate an image from a text prompt")
-    img_p.add_argument("--prompt", required=True, help="The image prompt")
-    img_p.add_argument("--width", type=int, required=True, help="Image width")
-    img_p.add_argument("--height", type=int, required=True, help="Image height")
+    img_p.add_argument("--prompt", default="", help="The image prompt")
+    img_p.add_argument("--width", type=int, default=0, help="Image width")
+    img_p.add_argument("--height", type=int, default=0, help="Image height")
     img_p.add_argument("--output", default=None, help="Output file path")
     img_p.add_argument(
-        "--image", "-i",
+        "--image",
+        "-i",
         action="append",
         default=None,
         help="Input image file for editing/reference. Repeat to attach multiple images (codex only).",
     )
     img_p.add_argument("--transparent", action="store_true", help="Remove background")
-    img_p.add_argument("--provider", default=None, help="Image provider (only 'codex' is supported; routes to the mac mini image_generation_service)")
+    img_p.add_argument(
+        "--state", default=None, help="Crash-safe image submission state file"
+    )
+    img_p.add_argument(
+        "--idempotency-key", default=None, help="Durable image submission key"
+    )
+    img_p.add_argument(
+        "--recover", default=None, help="Recover a crash-safe image state file"
+    )
+    img_p.add_argument(
+        "--provider",
+        default=None,
+        help="Image provider (only 'codex' is supported; routes to the mac mini image_generation_service)",
+    )
 
     # models
     models_p = sub.add_parser("models", help="List available models")

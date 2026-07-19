@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -13,20 +12,19 @@ import (
 	sdk "github.com/darrenoakey/daz-agent-sdk/go"
 )
 
-// skipIfNoGeminiKey skips the test when neither GEMINI_API_KEY nor GOOGLE_API_KEY is set.
-func skipIfNoGeminiKey(t *testing.T) {
+func requireGeminiCredential(t *testing.T) {
 	t.Helper()
-	if geminiAPIKey() == "" {
-		t.Skip("GEMINI_API_KEY and GOOGLE_API_KEY not set, skipping integration test")
+	if _, err := geminiAPIKey(context.Background()); err != nil {
+		t.Fatalf("Gemini credential unavailable: %v", err)
 	}
 }
 
-// geminiFlashLite returns the gemini-2.5-flash-lite ModelInfo, suitable for
+// geminiFlashLite returns the current Gemini Flash Lite ModelInfo, suitable for
 // fast, low-cost integration tests.
 func geminiFlashLite() sdk.ModelInfo {
 	return sdk.ModelInfo{
 		Provider: "gemini",
-		ModelID:  "gemini-2.5-flash-lite",
+		ModelID:  "gemini-3.1-flash-lite",
 	}
 }
 
@@ -301,12 +299,12 @@ func TestGeminiListModels_TierAssignments(t *testing.T) {
 		t.Errorf("gemini-2.5-flash tier = %q, want medium", flash.Tier)
 	}
 
-	lite, ok := byID["gemini-2.5-flash-lite"]
+	lite, ok := byID["gemini-3.1-flash-lite"]
 	if !ok {
-		t.Fatal("missing gemini-2.5-flash-lite")
+		t.Fatal("missing gemini-3.1-flash-lite")
 	}
 	if lite.Tier != sdk.TierLow {
-		t.Errorf("gemini-2.5-flash-lite tier = %q, want low", lite.Tier)
+		t.Errorf("gemini-3.1-flash-lite tier = %q, want low", lite.Tier)
 	}
 }
 
@@ -386,126 +384,53 @@ func TestNewGeminiProvider_Default(t *testing.T) {
 }
 
 func TestGeminiAvailable_WithoutKey(t *testing.T) {
-	orig1 := os.Getenv("GEMINI_API_KEY")
-	orig2 := os.Getenv("GOOGLE_API_KEY")
-
-	if orig1 == "" && orig2 == "" {
-		// Both already absent: Available() must return false, no error.
-		p := NewGeminiProvider()
-		ok, err := p.Available(context.Background())
-		if err != nil {
-			t.Fatalf("Available should not error when key missing, got: %v", err)
-		}
-		if ok {
-			t.Error("Available should return false when API keys are absent")
-		}
-		return
-	}
-
-	// At least one key is set — temporarily clear both.
-	os.Unsetenv("GEMINI_API_KEY")
-	os.Unsetenv("GOOGLE_API_KEY")
-	defer func() {
-		if orig1 != "" {
-			os.Setenv("GEMINI_API_KEY", orig1)
-		} else {
-			os.Unsetenv("GEMINI_API_KEY")
-		}
-		if orig2 != "" {
-			os.Setenv("GOOGLE_API_KEY", orig2)
-		} else {
-			os.Unsetenv("GOOGLE_API_KEY")
-		}
-	}()
-
-	p := NewGeminiProvider()
-	ok, err := p.Available(context.Background())
-	if err != nil {
-		t.Fatalf("Available should not error when keys missing, got: %v", err)
-	}
-	if ok {
-		t.Error("Available should return false when API keys are missing")
+	_, err := readCredential(context.Background(), credentialReference{
+		service: "daz-agent-sdk-missing-gemini",
+		account: "api_key",
+	})
+	if err == nil {
+		t.Fatal("missing Gemini credential should fail closed")
 	}
 }
 
 func TestGeminiAPIKeyDetection_GeminiVar(t *testing.T) {
-	orig1 := os.Getenv("GEMINI_API_KEY")
-	orig2 := os.Getenv("GOOGLE_API_KEY")
-	os.Unsetenv("GEMINI_API_KEY")
-	os.Unsetenv("GOOGLE_API_KEY")
-	defer func() {
-		if orig1 != "" {
-			os.Setenv("GEMINI_API_KEY", orig1)
-		} else {
-			os.Unsetenv("GEMINI_API_KEY")
-		}
-		if orig2 != "" {
-			os.Setenv("GOOGLE_API_KEY", orig2)
-		} else {
-			os.Unsetenv("GOOGLE_API_KEY")
-		}
-	}()
-
-	os.Setenv("GEMINI_API_KEY", "test-key-1")
-	got := geminiAPIKey()
-	if got != "test-key-1" {
-		t.Errorf("geminiAPIKey() = %q, want test-key-1", got)
+	got, err := geminiAPIKey(context.Background())
+	if err != nil {
+		t.Fatalf("geminiAPIKey error: %v", err)
+	}
+	if got == "" {
+		t.Fatal("geminiAPIKey returned an empty credential")
 	}
 }
 
 func TestGeminiAPIKeyDetection_GoogleVar(t *testing.T) {
-	orig1 := os.Getenv("GEMINI_API_KEY")
-	orig2 := os.Getenv("GOOGLE_API_KEY")
-	os.Unsetenv("GEMINI_API_KEY")
-	os.Unsetenv("GOOGLE_API_KEY")
-	defer func() {
-		if orig1 != "" {
-			os.Setenv("GEMINI_API_KEY", orig1)
-		} else {
-			os.Unsetenv("GEMINI_API_KEY")
-		}
-		if orig2 != "" {
-			os.Setenv("GOOGLE_API_KEY", orig2)
-		} else {
-			os.Unsetenv("GOOGLE_API_KEY")
-		}
-	}()
-
-	os.Setenv("GOOGLE_API_KEY", "test-key-2")
-	got := geminiAPIKey()
-	if got != "test-key-2" {
-		t.Errorf("geminiAPIKey() = %q, want test-key-2", got)
+	got, err := readCredential(context.Background(), geminiCredentials[1])
+	if err != nil {
+		t.Fatalf("Google credential fallback unavailable: %v", err)
+	}
+	if got == "" {
+		t.Fatal("Google credential fallback returned empty")
 	}
 }
 
 func TestGeminiAPIKeyDetection_GeminiTakesPrecedence(t *testing.T) {
-	orig1 := os.Getenv("GEMINI_API_KEY")
-	orig2 := os.Getenv("GOOGLE_API_KEY")
-	os.Setenv("GEMINI_API_KEY", "gemini-key")
-	os.Setenv("GOOGLE_API_KEY", "google-key")
-	defer func() {
-		if orig1 != "" {
-			os.Setenv("GEMINI_API_KEY", orig1)
-		} else {
-			os.Unsetenv("GEMINI_API_KEY")
-		}
-		if orig2 != "" {
-			os.Setenv("GOOGLE_API_KEY", orig2)
-		} else {
-			os.Unsetenv("GOOGLE_API_KEY")
-		}
-	}()
-
-	got := geminiAPIKey()
-	if got != "gemini-key" {
-		t.Errorf("GEMINI_API_KEY should take precedence, got %q", got)
+	got, err := geminiAPIKey(context.Background())
+	if err != nil {
+		t.Fatalf("geminiAPIKey error: %v", err)
+	}
+	primary, err := readCredential(context.Background(), geminiCredentials[0])
+	if err != nil {
+		t.Fatalf("primary Gemini credential unavailable: %v", err)
+	}
+	if got != primary {
+		t.Error("Gemini credential should take precedence over Google fallback")
 	}
 }
 
 // --- Integration tests (skipped if no API key) ---
 
 func TestGeminiAvailable_WithKey(t *testing.T) {
-	skipIfNoGeminiKey(t)
+	requireGeminiCredential(t)
 	p := NewGeminiProvider()
 	ok, err := p.Available(context.Background())
 	if err != nil {
@@ -517,7 +442,7 @@ func TestGeminiAvailable_WithKey(t *testing.T) {
 }
 
 func TestGeminiComplete_BasicText(t *testing.T) {
-	skipIfNoGeminiKey(t)
+	requireGeminiCredential(t)
 	p := NewGeminiProvider()
 
 	messages := []sdk.Message{
@@ -532,8 +457,8 @@ func TestGeminiComplete_BasicText(t *testing.T) {
 	if resp.Text == "" {
 		t.Error("Complete returned empty text")
 	}
-	if resp.ModelUsed.ModelID != "gemini-2.5-flash-lite" {
-		t.Errorf("ModelUsed.ModelID = %q, want gemini-2.5-flash-lite", resp.ModelUsed.ModelID)
+	if resp.ModelUsed.ModelID != "gemini-3.1-flash-lite" {
+		t.Errorf("ModelUsed.ModelID = %q, want gemini-3.1-flash-lite", resp.ModelUsed.ModelID)
 	}
 	if resp.ConversationID.String() == "" {
 		t.Error("ConversationID should be set")
@@ -545,7 +470,7 @@ func TestGeminiComplete_BasicText(t *testing.T) {
 }
 
 func TestGeminiComplete_StructuredOutputSimple(t *testing.T) {
-	skipIfNoGeminiKey(t)
+	requireGeminiCredential(t)
 	p := NewGeminiProvider()
 
 	schema := map[string]any{
@@ -585,7 +510,7 @@ func TestGeminiComplete_StructuredOutputSimple(t *testing.T) {
 }
 
 func TestGeminiComplete_StructuredOutputComplex(t *testing.T) {
-	skipIfNoGeminiKey(t)
+	requireGeminiCredential(t)
 	p := NewGeminiProvider()
 
 	schema := map[string]any{
@@ -634,7 +559,7 @@ func TestGeminiComplete_StructuredOutputComplex(t *testing.T) {
 }
 
 func TestGeminiStream_BasicText(t *testing.T) {
-	skipIfNoGeminiKey(t)
+	requireGeminiCredential(t)
 	p := NewGeminiProvider()
 
 	messages := []sdk.Message{
@@ -665,7 +590,7 @@ func TestGeminiStream_BasicText(t *testing.T) {
 }
 
 func TestGeminiComplete_SystemMessage(t *testing.T) {
-	skipIfNoGeminiKey(t)
+	requireGeminiCredential(t)
 	p := NewGeminiProvider()
 
 	messages := []sdk.Message{
@@ -694,4 +619,3 @@ func keys(m map[string]any) []string {
 	}
 	return result
 }
-

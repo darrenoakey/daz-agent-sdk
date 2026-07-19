@@ -18,11 +18,16 @@ def test_classify_rate_limit_message():
 
 
 def test_classify_rate_limit_429():
-    assert classify_error(Exception("HTTP 429 Too Many Requests")) == ErrorKind.RATE_LIMIT
+    assert (
+        classify_error(Exception("HTTP 429 Too Many Requests")) == ErrorKind.RATE_LIMIT
+    )
 
 
 def test_classify_rate_limit_overloaded():
-    assert classify_error(Exception("Provider is overloaded, please try again")) == ErrorKind.RATE_LIMIT
+    assert (
+        classify_error(Exception("Provider is overloaded, please try again"))
+        == ErrorKind.RATE_LIMIT
+    )
 
 
 def test_classify_rate_limit_capacity():
@@ -50,7 +55,9 @@ def test_classify_timeout_builtin():
 
 
 def test_classify_timeout_message():
-    assert classify_error(Exception("deadline exceeded for request")) == ErrorKind.TIMEOUT
+    assert (
+        classify_error(Exception("deadline exceeded for request")) == ErrorKind.TIMEOUT
+    )
 
 
 def test_classify_invalid_request_400():
@@ -58,15 +65,23 @@ def test_classify_invalid_request_400():
 
 
 def test_classify_invalid_request_schema():
-    assert classify_error(Exception("schema validation error in field x")) == ErrorKind.INVALID_REQUEST
+    assert (
+        classify_error(Exception("schema validation error in field x"))
+        == ErrorKind.INVALID_REQUEST
+    )
 
 
 def test_classify_not_available_connection_refused():
-    assert classify_error(ConnectionRefusedError("connection refused")) == ErrorKind.NOT_AVAILABLE
+    assert (
+        classify_error(ConnectionRefusedError("connection refused"))
+        == ErrorKind.NOT_AVAILABLE
+    )
 
 
 def test_classify_not_available_service_unavailable():
-    assert classify_error(Exception("503 service unavailable")) == ErrorKind.NOT_AVAILABLE
+    assert (
+        classify_error(Exception("503 service unavailable")) == ErrorKind.NOT_AVAILABLE
+    )
 
 
 def test_classify_not_available_offline():
@@ -74,7 +89,10 @@ def test_classify_not_available_offline():
 
 
 def test_classify_internal_default():
-    assert classify_error(Exception("something unexpected went wrong")) == ErrorKind.INTERNAL
+    assert (
+        classify_error(Exception("something unexpected went wrong"))
+        == ErrorKind.INTERNAL
+    )
 
 
 def test_classify_internal_500():
@@ -122,7 +140,9 @@ async def test_single_shot_first_fails_second_succeeds():
     )
     assert result == "result from p2"
     # p1 is retried max_retries times (default 3) before cascading to p2
-    assert calls[:-1] == ["p1"] * (len(calls) - 1), f"all but last should be p1: {calls}"
+    assert calls[:-1] == ["p1"] * (len(calls) - 1), (
+        f"all but last should be p1: {calls}"
+    )
     assert calls[-1] == "p2"
 
 
@@ -187,7 +207,9 @@ async def test_single_shot_timeout_cascades():
             raise asyncio.TimeoutError()
         return "ok"
 
-    result = await execute_with_fallback("high", ["p1", "p2"], execute, is_conversation=False)
+    result = await execute_with_fallback(
+        "high", ["p1", "p2"], execute, is_conversation=False
+    )
     assert result == "ok"
     assert calls == ["p1", "p2"]
 
@@ -202,7 +224,9 @@ async def test_single_shot_internal_error_cascades():
             raise Exception("unexpected internal failure")
         return "ok"
 
-    result = await execute_with_fallback("high", ["p1", "p2"], execute, is_conversation=False)
+    result = await execute_with_fallback(
+        "high", ["p1", "p2"], execute, is_conversation=False
+    )
     assert result == "ok"
     # p1 (internal) retried max_retries times before cascading to p2
     assert calls[:-1] == ["p1"] * (len(calls) - 1)
@@ -222,7 +246,9 @@ async def test_auth_error_raises_immediately():
         raise Exception("401 Unauthorized — invalid api key")
 
     with pytest.raises(AgentError) as exc_info:
-        await execute_with_fallback("high", ["p1", "p2", "p3"], execute, is_conversation=False)
+        await execute_with_fallback(
+            "high", ["p1", "p2", "p3"], execute, is_conversation=False
+        )
 
     # should have stopped at p1 without trying p2 or p3
     assert calls == ["p1"]
@@ -238,7 +264,9 @@ async def test_invalid_request_raises_immediately():
         raise Exception("400 bad request: schema validation failed")
 
     with pytest.raises(AgentError) as exc_info:
-        await execute_with_fallback("high", ["p1", "p2", "p3"], execute, is_conversation=False)
+        await execute_with_fallback(
+            "high", ["p1", "p2", "p3"], execute, is_conversation=False
+        )
 
     assert calls == ["p1"]
     assert exc_info.value.kind == ErrorKind.INVALID_REQUEST
@@ -268,7 +296,12 @@ async def test_conversation_backoff_first_attempt_no_delay():
 
 @pytest.mark.asyncio
 async def test_conversation_backoff_respects_max():
-    from daz_agent_sdk.config import Config, FallbackConfig, FallbackConversationConfig, FallbackSingleShotConfig
+    from daz_agent_sdk.config import (
+        Config,
+        FallbackConfig,
+        FallbackConversationConfig,
+        FallbackSingleShotConfig,
+    )
 
     cfg = Config(
         fallback=FallbackConfig(
@@ -312,7 +345,9 @@ async def test_conversation_no_backoff_for_single_shot():
     async def execute(provider: str):
         call_times.append(time.monotonic())
         if provider == "p1":
-            raise Exception("connection refused")  # NOT_AVAILABLE — no retry, cascades immediately
+            raise Exception(
+                "connection refused"
+            )  # NOT_AVAILABLE — no retry, cascades immediately
         return "ok"
 
     start = time.monotonic()
@@ -331,7 +366,7 @@ async def test_conversation_no_backoff_for_single_shot():
 async def test_logging_records_attempt_and_success():
     events: list[dict] = []
 
-    class _FakeLogger:
+    class RecordingLogger:
         def log_event(self, event_type: str, **kwargs):
             events.append({"event": event_type, **kwargs})
 
@@ -343,7 +378,7 @@ async def test_logging_records_attempt_and_success():
         ["p1"],
         execute,
         is_conversation=False,
-        logger=_FakeLogger(),
+        logger=RecordingLogger(),
     )
 
     event_types = [e["event"] for e in events]
@@ -355,7 +390,7 @@ async def test_logging_records_attempt_and_success():
 async def test_logging_records_cascade():
     events: list[dict] = []
 
-    class _FakeLogger:
+    class RecordingLogger:
         def log_event(self, event_type: str, **kwargs):
             events.append({"event": event_type, **kwargs})
 
@@ -369,7 +404,7 @@ async def test_logging_records_cascade():
         ["p1", "p2"],
         execute,
         is_conversation=False,
-        logger=_FakeLogger(),
+        logger=RecordingLogger(),
     )
 
     cascade_events = [e for e in events if e["event"] == "cascade"]
@@ -382,7 +417,7 @@ async def test_logging_records_cascade():
 async def test_logging_records_all_failed():
     events: list[dict] = []
 
-    class _FakeLogger:
+    class RecordingLogger:
         def log_event(self, event_type: str, **kwargs):
             events.append({"event": event_type, **kwargs})
 
@@ -395,7 +430,7 @@ async def test_logging_records_all_failed():
             ["p1", "p2"],
             execute,
             is_conversation=False,
-            logger=_FakeLogger(),
+            logger=RecordingLogger(),
         )
 
     event_types = [e["event"] for e in events]

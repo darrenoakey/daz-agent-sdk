@@ -75,16 +75,23 @@ def test_default_provider_arbiter(tmp_path: Path) -> None:
     assert cfg.providers["arbiter"]["base_url"] == "http://10.0.0.254:8400"
 
 
+def test_default_text_codex_model_is_installed_model(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "absent.yaml")
+    for tier in ("very_high", "high", "medium"):
+        assert "codex:gpt-5.6-sol" in cfg.tiers[tier].chain
+        assert all("gpt-5.5" not in entry for entry in cfg.tiers[tier].chain)
+
+
 # ##################################################################
 # default image config
 def test_default_image_model(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.model == "z-image-turbo"
+    assert cfg.image.model == ""
 
 
 def test_default_codex_model(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.codex_model == "gpt-5.5"
+    assert cfg.image.codex_model == ""
 
 
 def test_codex_model_override(tmp_path: Path) -> None:
@@ -94,24 +101,10 @@ def test_codex_model_override(tmp_path: Path) -> None:
     assert cfg.image.codex_model == "gpt-5.5"
 
 
-def test_default_image_steps_very_high(tmp_path: Path) -> None:
+def test_default_image_has_no_backend_steps(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.tiers["very_high"].steps == 8
-
-
-def test_default_image_steps_high(tmp_path: Path) -> None:
-    cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.tiers["high"].steps == 3
-
-
-def test_default_image_steps_medium(tmp_path: Path) -> None:
-    cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.tiers["medium"].steps == 3
-
-
-def test_default_image_steps_low(tmp_path: Path) -> None:
-    cfg = load_config(tmp_path / "absent.yaml")
-    assert cfg.image.tiers["low"].steps == 2
+    assert cfg.image.tiers == {}
+    assert cfg.image.fallback == []
 
 
 # ##################################################################
@@ -170,7 +163,10 @@ def test_custom_tier_chain(tmp_path: Path) -> None:
     }
     config_file.write_text(yaml.dump(data), encoding="utf-8")
     cfg = load_config(config_file)
-    assert cfg.tiers["high"].chain == ["gemini:gemini-2.5-pro", "claude:claude-opus-4-6"]
+    assert cfg.tiers["high"].chain == [
+        "gemini:gemini-2.5-pro",
+        "claude:claude-opus-4-6",
+    ]
     # other tiers fall back to defaults
     assert cfg.tiers["low"].chain[0] == "claude:claude-haiku-4-5-20251001"
 
@@ -193,6 +189,7 @@ def test_custom_image_model(tmp_path: Path) -> None:
     assert cfg.image.tiers["high"].steps == 20
     assert cfg.image.tiers["medium"].steps == 10
     assert cfg.image.tiers["low"].steps == 2
+
 
 def test_custom_provider_config(tmp_path: Path) -> None:
     config_file = tmp_path / "config.yaml"
@@ -291,30 +288,30 @@ def test_get_tier_chain_returns_copy(tmp_path: Path) -> None:
 # verify correct step count for each tier
 def test_get_image_steps_very_high(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert get_image_steps(Tier.VERY_HIGH, cfg) == 8
+    assert get_image_steps(Tier.VERY_HIGH, cfg) == 0
 
 
 def test_get_image_steps_high(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert get_image_steps(Tier.HIGH, cfg) == 3
+    assert get_image_steps(Tier.HIGH, cfg) == 0
 
 
 def test_get_image_steps_medium(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert get_image_steps(Tier.MEDIUM, cfg) == 3
+    assert get_image_steps(Tier.MEDIUM, cfg) == 0
 
 
 def test_get_image_steps_low(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    assert get_image_steps(Tier.LOW, cfg) == 2
+    assert get_image_steps(Tier.LOW, cfg) == 0
 
 
 def test_get_image_steps_unknown_tier_returns_default(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "absent.yaml")
-    # FREE_FAST has no image tier config — should return a sensible default
+    # Legacy image tiers have no backend-owned default.
     steps = get_image_steps(Tier.FREE_FAST, cfg)
     assert isinstance(steps, int)
-    assert steps > 0
+    assert steps == 0
 
 
 # ##################################################################
@@ -361,7 +358,7 @@ def test_invalid_yaml_uses_defaults(tmp_path: Path) -> None:
     cfg = load_config(config_file)
     assert isinstance(cfg, Config)
     assert "high" in cfg.tiers
-    assert cfg.image.model == "z-image-turbo"
+    assert cfg.image.model == ""
 
 
 def test_yaml_with_null_root_uses_defaults(tmp_path: Path) -> None:
@@ -418,7 +415,11 @@ def test_custom_tts_voices(tmp_path: Path) -> None:
         "tts": {
             "default": ["local:qwen3-tts"],
             "voices": {
-                "alice": {"provider": "local", "voice_id": "alice", "description": "Friendly"},
+                "alice": {
+                    "provider": "local",
+                    "voice_id": "alice",
+                    "description": "Friendly",
+                },
             },
         }
     }

@@ -245,7 +245,9 @@ def test_events_jsonl_format(tmp_path: Path) -> None:
     logger.log_event("assistant_response", content="hello", tokens=5)
     logger.close()
 
-    raw_lines = (logger.log_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    raw_lines = (
+        (logger.log_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    )
     assert len(raw_lines) == 4  # 3 + close
     for line in raw_lines:
         obj = json.loads(line)

@@ -1,8 +1,10 @@
 package dazagentsdk
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,13 +23,13 @@ type TierConfig struct {
 	Chain []string `yaml:"chain" json:"chain"`
 }
 
-// ImageTierConfig holds the step count for one image quality tier.
+// ImageTierConfig preserves legacy image settings that no longer affect dispatch.
 type ImageTierConfig struct {
 	Steps int `yaml:"steps" json:"steps"`
 }
 
-// ImageConfig holds model selection and per-tier step counts for image
-// generation.
+// ImageConfig preserves legacy backend fields so old configuration still parses.
+// Image generation always uses the Mac mini Codex image service.
 type ImageConfig struct {
 	Model                  string                     `yaml:"model" json:"model"`
 	CodexModel             string                     `yaml:"codex_model" json:"codex_model"`
@@ -88,27 +90,58 @@ type Config struct {
 	Fallback  FallbackConfig            `yaml:"fallback" json:"fallback"`
 }
 
+// ValidateImageConfig prevents obsolete settings from influencing durable IGS calls.
+func (configuration *Config) ValidateImageConfig() error {
+	if configuration == nil {
+		return nil
+	}
+	image := configuration.Image
+	configured := make([]string, 0, 5)
+	if strings.TrimSpace(image.Model) != "" {
+		configured = append(configured, "model")
+	}
+	if strings.TrimSpace(image.CodexModel) != "" {
+		configured = append(configured, "codex_model")
+	}
+	if len(image.Tiers) != 0 {
+		configured = append(configured, "tiers")
+	}
+	if len(image.Fallback) != 0 {
+		configured = append(configured, "fallback")
+	}
+	if strings.TrimSpace(image.TransparentPostProcess) != "" {
+		configured = append(configured, "transparent.post_process")
+	}
+	if len(configured) != 0 {
+		return NewAgentError(
+			fmt.Sprintf("legacy image configuration is actively disabled: %s", strings.Join(configured, ", ")),
+			ErrorInvalidRequest, nil,
+		)
+	}
+	return nil
+}
+
 // defaultTierChains returns the built-in tier chain mappings.
 func defaultTierChains() map[string]TierConfig {
 	return map[string]TierConfig{
 		"very_high": {Chain: []string{
 			"claude:claude-opus-4-6",
-			"codex:gpt-5.5",
+			"codex:gpt-5.6-sol",
 			"gemini:gemini-2.5-pro",
 		}},
 		"high": {Chain: []string{
 			"claude:claude-opus-4-6",
-			"codex:gpt-5.5",
+			"codex:gpt-5.6-sol",
 			"gemini:gemini-2.5-pro",
 		}},
 		"medium": {Chain: []string{
 			"claude:claude-sonnet-4-6",
-			"codex:gpt-4.1",
+			"codex:gpt-5.6-sol",
 			"gemini:gemini-2.5-flash",
 		}},
 		"low": {Chain: []string{
 			"claude:claude-haiku-4-5-20251001",
-			"gemini:gemini-2.5-flash-lite",
+			"gemini:gemini-3.1-flash-lite",
 			"arbiter:gemma4-26b",
 		}},
 		"free_fast": {Chain: []string{
@@ -128,16 +161,6 @@ func defaultProviders() map[string]map[string]any {
 		"gemini":  {},
 		"ollama":  {"base_url": "http://localhost:11434"},
 		"arbiter": {"base_url": "http://10.0.0.254:8400"},
-	}
-}
-
-// defaultImageTiers returns the built-in image step counts per tier.
-func defaultImageTiers() map[string]ImageTierConfig {
-	return map[string]ImageTierConfig{
-		"very_high": {Steps: 8},
-		"high":      {Steps: 3},
-		"medium":    {Steps: 3},
-		"low":       {Steps: 2},
 	}
 }
 
@@ -163,23 +186,9 @@ func (c *Config) applyDefaults() {
 		}
 	}
 
-	// Image defaults
-	if c.Image.Model == "" {
-		c.Image.Model = "z-image-turbo"
-	}
+	// Legacy image fields default empty because the service owns all backend settings.
 	if c.Image.Tiers == nil {
 		c.Image.Tiers = make(map[string]ImageTierConfig)
-	}
-	for k, v := range defaultImageTiers() {
-		if _, exists := c.Image.Tiers[k]; !exists {
-			c.Image.Tiers[k] = v
-		}
-	}
-	if c.Image.TransparentPostProcess == "" {
-		c.Image.TransparentPostProcess = "birefnet"
-	}
-	if len(c.Image.Fallback) == 0 {
-		c.Image.Fallback = []string{"spark", "nano-banana-2", "ollama"}
 	}
 
 	// TTS defaults
@@ -237,6 +246,7 @@ type rawConfig struct {
 	Providers map[string]map[string]any `yaml:"providers"`
 	Image     struct {
 		Model       string                     `yaml:"model"`
+		CodexModel  string                     `yaml:"codex_model"`
 		Tiers       map[string]ImageTierConfig `yaml:"tiers"`
 		Fallback    []string                   `yaml:"fallback"`
 		Transparent struct {
@@ -287,6 +297,7 @@ func LoadConfig(path ...string) (*Config, error) {
 		Providers: raw.Providers,
 		Image: ImageConfig{
 			Model:                  raw.Image.Model,
+			CodexModel:             raw.Image.CodexModel,
 			Tiers:                  raw.Image.Tiers,
 			Fallback:               raw.Image.Fallback,
 			TransparentPostProcess: raw.Image.Transparent.PostProcess,
@@ -312,9 +323,8 @@ func GetTierChain(tier Tier, cfg *Config) []string {
 	return chain
 }
 
-// GetImageSteps returns the inference step count for a given image generation
-// tier. Falls back to the medium tier's steps if the requested tier is not
-// configured.
+// GetImageSteps returns a parsed legacy value for compatibility. Image dispatch
+// ignores this value because the Mac mini Codex image service owns its settings.
 func GetImageSteps(tier Tier, cfg *Config) int {
 	tc, ok := cfg.Image.Tiers[string(tier)]
 	if !ok {
@@ -322,7 +332,7 @@ func GetImageSteps(tier Tier, cfg *Config) int {
 		if med, ok := cfg.Image.Tiers["medium"]; ok {
 			return med.Steps
 		}
-		return 4
+		return 0
 	}
 	return tc.Steps
 }

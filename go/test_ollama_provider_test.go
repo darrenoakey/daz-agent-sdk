@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +33,68 @@ type testOllamaProvider struct {
 	client  *http.Client
 }
 
+// configuredTestOllamaURL resolves a live Ollama-compatible endpoint from the
+// same non-secret local configuration used by the SDK.
+func configuredTestOllamaURL(t *testing.T) string {
+	t.Helper()
+	config, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("load local SDK configuration: %v", err)
+	}
+	names := make([]string, 0, len(config.Providers))
+	for name := range config.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	failures := make([]string, 0, len(names))
+	for _, name := range names {
+		baseURL := configuredProviderURL(config, name)
+		if baseURL == "" {
+			continue
+		}
+		available, err := testOllamaAvailable(baseURL)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s=%s: %v", name, baseURL, err))
+			continue
+		}
+		if available {
+			return baseURL
+		}
+		failures = append(failures, fmt.Sprintf("%s=%s: HTTP status was not 200", name, baseURL))
+	}
+	t.Fatalf("no live Ollama-compatible endpoint found in local SDK configuration: %s", strings.Join(failures, "; "))
+	return ""
+}
+
+func configuredProviderURL(config *Config, name string) string {
+	providerConfig := config.Providers[name]
+	baseURL, _ := providerConfig["base_url"].(string)
+	return baseURL
+}
+
+func testOllamaAvailable(baseURL string) (bool, error) {
+	contextWithTimeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(contextWithTimeout, http.MethodGet, strings.TrimRight(baseURL, "/")+"/api/tags", nil)
+	if err != nil {
+		return false, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return false, err
+	}
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			return false, fmt.Errorf("read response: %v; close response: %w", err, closeErr)
+		}
+		return false, err
+	}
+	if err := response.Body.Close(); err != nil {
+		return false, err
+	}
+	return response.StatusCode == http.StatusOK, nil
+}
+
 func (o *testOllamaProvider) Name() string { return "ollama" }
 
 func (o *testOllamaProvider) Available(ctx context.Context) (bool, error) {
@@ -44,8 +108,15 @@ func (o *testOllamaProvider) Available(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return false, nil
+		}
+		return false, nil
+	}
+	if err := resp.Body.Close(); err != nil {
+		return false, nil
+	}
 	return resp.StatusCode == 200, nil
 }
 
@@ -86,10 +157,15 @@ func (o *testOllamaProvider) Complete(ctx context.Context, messages []Message, m
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read ollama error response: %w", readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close ollama error response: %w", closeErr)
+		}
 		return nil, fmt.Errorf("ollama error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -99,7 +175,13 @@ func (o *testOllamaProvider) Complete(ctx context.Context, messages []Message, m
 		} `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return nil, fmt.Errorf("decode ollama response: %v; close response: %w", err, closeErr)
+		}
 		return nil, fmt.Errorf("decode: %w", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("close ollama response: %w", err)
 	}
 
 	return &Response{

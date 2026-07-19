@@ -2,8 +2,14 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/darrenoakey/daz-agent-sdk/go"
 )
@@ -23,14 +29,72 @@ func testArbiterModel() sdk.ModelInfo {
 	}
 }
 
-// skipIfArbiterUnavailable skips the caller when the arbiter is not
-// reachable at the configured base URL. Matches the pattern used for
-// the ollama provider.
-func skipIfArbiterUnavailable(t *testing.T, p *ArbiterProvider) {
+func requireArbiterProvider(t *testing.T) *ArbiterProvider {
 	t.Helper()
-	ok, err := p.Available(context.Background())
-	if err != nil || !ok {
-		t.Skip("Arbiter is not available at the configured URL, skipping integration test")
+	direct := NewArbiterProvider("")
+	if ok, err := direct.Available(context.Background()); err == nil && ok {
+		return direct
+	}
+	return newArbiterTunnelProvider(t)
+}
+
+func newArbiterTunnelProvider(t *testing.T) *ArbiterProvider {
+	t.Helper()
+	port := reserveLoopbackPort(t)
+	forward := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:8400", port)
+	command := exec.Command("/usr/bin/ssh", "-N", "-o", "BatchMode=yes",
+		"-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10",
+		"-L", forward, "darren@10.0.0.254")
+	if err := command.Start(); err != nil {
+		t.Fatalf("starting owned Arbiter SSH tunnel: %v", err)
+	}
+	t.Cleanup(func() { stopArbiterTunnel(t, command) })
+	provider := NewArbiterProvider(fmt.Sprintf("http://127.0.0.1:%d", port))
+	waitForArbiterTunnel(t, provider)
+	return provider
+}
+
+func reserveLoopbackPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserving loopback port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatalf("releasing reserved loopback port: %v", err)
+	}
+	return port
+}
+
+func waitForArbiterTunnel(t *testing.T, provider *ArbiterProvider) {
+	t.Helper()
+	deadline := time.NewTimer(15 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	t.Cleanup(func() { deadline.Stop() })
+	t.Cleanup(ticker.Stop)
+	for {
+		if ok, err := provider.Available(context.Background()); err == nil && ok {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("owned Arbiter SSH tunnel did not become ready")
+		case <-ticker.C:
+		}
+	}
+}
+
+func stopArbiterTunnel(t *testing.T, command *exec.Cmd) {
+	t.Helper()
+	if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Errorf("stopping owned Arbiter SSH tunnel: %v", err)
+	}
+	if err := command.Wait(); err != nil {
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) {
+			t.Errorf("waiting for owned Arbiter SSH tunnel: %v", err)
+		}
 	}
 }
 
@@ -63,7 +127,17 @@ func TestArbiterAvailableReportsReachability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Available returned error: %v", err)
 	}
-	t.Logf("Arbiter available: %v", ok)
+	if ok {
+		return
+	}
+	tunnelProvider := newArbiterTunnelProvider(t)
+	ok, err = tunnelProvider.Available(context.Background())
+	if err != nil {
+		t.Fatalf("Available through owned SSH tunnel returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("Arbiter unavailable through owned SSH tunnel")
+	}
 }
 
 func TestArbiterAvailableWrongPortReturnsFalse(t *testing.T) {
@@ -78,8 +152,7 @@ func TestArbiterAvailableWrongPortReturnsFalse(t *testing.T) {
 }
 
 func TestArbiterListModels(t *testing.T) {
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	models, err := p.ListModels(context.Background())
 	if err != nil {
@@ -113,8 +186,7 @@ func TestArbiterListModelsWrongPortReturnsError(t *testing.T) {
 }
 
 func TestArbiterCompleteSimplePrompt(t *testing.T) {
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	messages := []sdk.Message{
 		{Role: "user", Content: "What is 2+2? Reply with just the number."},
@@ -133,8 +205,7 @@ func TestArbiterCompleteSimplePrompt(t *testing.T) {
 }
 
 func TestArbiterCompleteWithSystemMessage(t *testing.T) {
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	messages := []sdk.Message{
 		{Role: "system", Content: "You are a terse assistant. Be brief."},
@@ -151,8 +222,7 @@ func TestArbiterCompleteWithSystemMessage(t *testing.T) {
 }
 
 func TestArbiterStreamYieldsChunks(t *testing.T) {
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	messages := []sdk.Message{
 		{Role: "user", Content: "Count from 1 to 5, one number per line."},
@@ -183,8 +253,7 @@ func TestArbiterStreamYieldsChunks(t *testing.T) {
 }
 
 func TestArbiterStreamProducesCompleteResponse(t *testing.T) {
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	messages := []sdk.Message{
 		{Role: "user", Content: "What is 10 divided by 2? Reply with just the number."},
@@ -244,8 +313,7 @@ func TestArbiterStreamWrongPortRaisesAgentError(t *testing.T) {
 // adapter submits, polls, and returns one vector per input text.
 // Skipped when the arbiter is unreachable.
 func TestArbiterEmbedReturnsVectors(t *testing.T) {
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	texts := []string{
 		"The quick brown fox jumps over the lazy dog.",
@@ -280,8 +348,7 @@ func TestArbiterEmbedReturnsVectors(t *testing.T) {
 // TestArbiterEmbedDimension verifies nomic-embed-text-v1.5 returns 768-dim
 // vectors with a consistent Dimension field matching len(Embeddings[0]).
 func TestArbiterEmbedDimension(t *testing.T) {
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*60*1e9)
 	defer cancel()
@@ -340,14 +407,9 @@ func TestArbiterEmbedWrongPortRaisesAgentError(t *testing.T) {
 
 // TestArbiterCompleteQwenReasoning exercises qwen3.6-27b and verifies
 // that the reasoning→content fallback path populates resp.Text even
-// when the model is in reasoning mode. Marked slow because a cold
-// qwen load is up to 10 minutes; skipped under -short.
+// when the model is in reasoning mode. A cold qwen load can take up to 10 minutes.
 func TestArbiterCompleteQwenReasoning(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping qwen3.6-27b slow test under -short")
-	}
-	p := NewArbiterProvider("")
-	skipIfArbiterUnavailable(t, p)
+	p := requireArbiterProvider(t)
 
 	messages := []sdk.Message{
 		{Role: "user", Content: "What is 2+2? Answer with just the number."},
@@ -368,5 +430,16 @@ func TestArbiterCompleteQwenReasoning(t *testing.T) {
 	}
 	if strings.TrimSpace(resp.Text) == "" {
 		t.Error("qwen response text is empty — reasoning fallback did not populate it")
+	}
+}
+
+func TestArbiterLoopbackTunnelListsModels(t *testing.T) {
+	provider := newArbiterTunnelProvider(t)
+	models, err := provider.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels through owned SSH tunnel: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("ListModels through owned SSH tunnel returned no LLM models")
 	}
 }

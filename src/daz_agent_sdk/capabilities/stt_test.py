@@ -22,7 +22,9 @@ def test_build_stt_command_structure() -> None:
 
 
 def test_build_stt_command_model_flag() -> None:
-    cmd = _build_stt_command(Path("/tmp/a.wav"), model_size="large-v3-turbo", language=None)
+    cmd = _build_stt_command(
+        Path("/tmp/a.wav"), model_size="large-v3-turbo", language=None
+    )
     idx = cmd.index("--model")
     assert cmd[idx + 1] == "large-v3-turbo"
 
@@ -68,6 +70,7 @@ def test_local_stt_model_provider() -> None:
 @pytest.mark.asyncio
 async def test_transcribe_missing_file_raises(tmp_path: Path) -> None:
     from daz_agent_sdk.capabilities.stt import transcribe
+
     missing = tmp_path / "nonexistent.wav"
     with pytest.raises(AgentError) as exc_info:
         await transcribe(missing)

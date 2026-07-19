@@ -9,12 +9,15 @@ from typing import Any, Type
 from uuid import uuid4
 
 from daz_agent_sdk.providers.base import Provider
-from daz_agent_sdk.structured import extract_result, schema_filename, schema_instructions
+from daz_agent_sdk.structured import (
+    extract_result,
+    schema_filename,
+    schema_instructions,
+)
 from daz_agent_sdk.types import (
     AgentError,
     Capability,
     ErrorKind,
-    ImageResult,
     Message,
     ModelInfo,
     Response,
@@ -29,18 +32,12 @@ from daz_agent_sdk.types import (
 _CODEX_MODELS = [
     ModelInfo(
         provider="codex",
-        model_id="gpt-5.5",
-        display_name="GPT-5.3 Codex",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
+        model_id="gpt-5.6-sol",
+        display_name="GPT-5.6 Sol",
+        capabilities=frozenset(
+            {Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}
+        ),
         tier=Tier.HIGH,
-        supports_tools=True,
-    ),
-    ModelInfo(
-        provider="codex",
-        model_id="gpt-4.1",
-        display_name="GPT-4.1",
-        capabilities=frozenset({Capability.TEXT, Capability.STRUCTURED, Capability.AGENTIC}),
-        tier=Tier.MEDIUM,
         supports_tools=True,
     ),
 ]
@@ -54,7 +51,13 @@ def _classify_error(err: Exception) -> ErrorKind:
     type_name = type(err).__name__.lower()
     if "429" in msg or "rate_limit" in msg or "ratelimit" in type_name:
         return ErrorKind.RATE_LIMIT
-    if "401" in msg or "403" in msg or "auth" in msg or "authentication" in type_name or "permission" in msg:
+    if (
+        "401" in msg
+        or "403" in msg
+        or "auth" in msg
+        or "authentication" in type_name
+        or "permission" in msg
+    ):
         return ErrorKind.AUTH
     if "timeout" in msg or "timed out" in msg or "timeout" in type_name:
         return ErrorKind.TIMEOUT
@@ -81,9 +84,19 @@ def _build_prompt(messages: list[Message]) -> str:
 # ##################################################################
 # run codex subprocess
 # pipe prompt to stdin, return (stdout, stderr, returncode)
-async def _run_codex(prompt: str, model_id: str, timeout: float) -> tuple[str, str, int]:
+async def _run_codex(
+    prompt: str, model_id: str, timeout: float
+) -> tuple[str, str, int]:
     proc = await asyncio.create_subprocess_exec(
-        "codex", "exec", "-", "--json", "-m", model_id, "-s", "read-only", "--ephemeral",
+        "codex",
+        "exec",
+        "-",
+        "--json",
+        "-m",
+        model_id,
+        "-s",
+        "read-only",
+        "--ephemeral",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -94,9 +107,23 @@ async def _run_codex(prompt: str, model_id: str, timeout: float) -> tuple[str, s
             timeout=timeout,
         )
     except asyncio.TimeoutError:
-        proc.kill()
-        raise AgentError(f"codex request timed out after {timeout}s", kind=ErrorKind.TIMEOUT)
+        await _stop_owned_process(proc)
+        raise AgentError(
+            f"codex request timed out after {timeout}s", kind=ErrorKind.TIMEOUT
+        )
     return stdout_bytes.decode(), stderr_bytes.decode(), proc.returncode or 0
+
+
+# ##################################################################
+# stop owned process
+# terminate only the subprocess created by this request and reap it before return
+async def _stop_owned_process(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    await proc.wait()
 
 
 # ##################################################################
@@ -185,26 +212,35 @@ class CodexProvider(Provider):
         turn_id = uuid4()
 
         try:
-            stdout, stderr, returncode = await _run_codex(prompt, model.model_id, timeout)
+            stdout, stderr, returncode = await _run_codex(
+                prompt, model.model_id, timeout
+            )
         except AgentError:
             raise
         except Exception as err:
             raise AgentError(str(err), kind=_classify_error(err)) from err
 
         if returncode != 0 and not stdout.strip():
-            raise AgentError(f"codex exited with code {returncode}: {stderr}", kind=ErrorKind.INTERNAL)
+            raise AgentError(
+                f"codex exited with code {returncode}: {stderr}",
+                kind=ErrorKind.INTERNAL,
+            )
 
         text, usage = _parse_jsonl_response(stdout)
 
         if schema is not None:
             import tempfile
+
             tmp_dir = tempfile.mkdtemp(prefix="codex-structured-")
             try:
-                parsed_instance = extract_result(schema, out_filename or "", tmp_dir, text)
+                parsed_instance = extract_result(
+                    schema, out_filename or "", tmp_dir, text
+                )
             except Exception as exc:
                 raise AgentError(str(exc), kind=ErrorKind.INTERNAL) from exc
             finally:
                 import shutil as _shutil
+
                 _shutil.rmtree(tmp_dir, ignore_errors=True)
             return StructuredResponse(
                 text=text,
@@ -236,62 +272,81 @@ class CodexProvider(Provider):
         if shutil.which("codex") is None:
             raise AgentError("codex CLI not found", kind=ErrorKind.NOT_AVAILABLE)
 
-        prompt = _build_prompt(messages)
-        proc = await asyncio.create_subprocess_exec(
-            "codex", "exec", "-", "--json", "-m", model.model_id, "-s", "read-only", "--ephemeral",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        assert proc.stdin is not None
-        assert proc.stdout is not None
-        proc.stdin.write(prompt.encode())
-        proc.stdin.close()
-
+        proc: asyncio.subprocess.Process | None = None
+        stderr_task: asyncio.Task[bytes] | None = None
         try:
-            async for raw_line in proc.stdout:
-                line = raw_line.decode().strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event_type = event.get("type", "")
-                if event_type == "item.completed":
-                    item = event.get("item", {})
-                    if item.get("type") == "agent_message":
-                        text = item.get("text", "")
-                        if text:
-                            yield text
-                elif event_type == "turn.failed":
-                    error = event.get("error", {})
-                    error_msg = error.get("message", "codex turn failed")
-                    raise AgentError(error_msg, kind=_classify_error(Exception(error_msg)))
-                elif event_type == "error":
-                    error_msg = event.get("message", "codex error")
-                    raise AgentError(error_msg, kind=_classify_error(Exception(error_msg)))
+            async with asyncio.timeout(timeout):
+                prompt = _build_prompt(messages)
+                proc = await asyncio.create_subprocess_exec(
+                    "codex",
+                    "exec",
+                    "-",
+                    "--json",
+                    "-m",
+                    model.model_id,
+                    "-s",
+                    "read-only",
+                    "--ephemeral",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                assert proc.stdin is not None
+                assert proc.stdout is not None
+                assert proc.stderr is not None
+                stderr_task = asyncio.create_task(proc.stderr.read())
+                proc.stdin.write(prompt.encode())
+                await proc.stdin.drain()
+                proc.stdin.close()
+                await proc.stdin.wait_closed()
+
+                async for raw_line in proc.stdout:
+                    line = raw_line.decode().strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    event_type = event.get("type", "")
+                    if event_type == "item.completed":
+                        item = event.get("item", {})
+                        if item.get("type") == "agent_message":
+                            text = item.get("text", "")
+                            if text:
+                                yield text
+                    elif event_type == "turn.failed":
+                        error = event.get("error", {})
+                        error_msg = error.get("message", "codex turn failed")
+                        raise AgentError(
+                            error_msg, kind=_classify_error(Exception(error_msg))
+                        )
+                    elif event_type == "error":
+                        error_msg = event.get("message", "codex error")
+                        raise AgentError(
+                            error_msg, kind=_classify_error(Exception(error_msg))
+                        )
+                await proc.wait()
+                stderr = (await stderr_task).decode(errors="replace")
+                if proc.returncode != 0:
+                    raise AgentError(
+                        f"codex exited with code {proc.returncode}: {stderr}",
+                        kind=ErrorKind.INTERNAL,
+                    )
+        except TimeoutError as err:
+            if proc is not None:
+                await _stop_owned_process(proc)
+            if stderr_task is not None:
+                await stderr_task
+            raise AgentError(
+                f"codex request timed out after {timeout}s", kind=ErrorKind.TIMEOUT
+            ) from err
         except AgentError:
             raise
         except Exception as err:
             raise AgentError(str(err), kind=_classify_error(err)) from err
         finally:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
-
-    # ##################################################################
-    # generate image
-    # codex does not support image generation
-    async def generate_image(
-        self,
-        prompt: str,
-        *,
-        width: int,
-        height: int,
-        output: Path,
-        **kwargs: Any,
-    ) -> ImageResult:
-        raise NotImplementedError("codex does not support image generation")
+            if proc is not None:
+                await _stop_owned_process(proc)
+            if stderr_task is not None and not stderr_task.done():
+                await stderr_task

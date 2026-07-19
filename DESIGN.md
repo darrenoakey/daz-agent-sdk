@@ -54,7 +54,7 @@ daz-agent-sdk/
 │       │   └── vllm.py          # HTTP to local vLLM server
 │       └── capabilities/
 │           ├── __init__.py
-│           ├── image.py         # image generation (mflux, DALL-E, Gemini)
+│           ├── image.py         # durable Mac mini Codex image-service client
 │           ├── tts.py           # text-to-speech (Qwen3-TTS, etc.)
 │           └── stt.py           # speech-to-text (Whisper, etc.)
 ├── run                          # facade script (venv, pip install, delegate)
@@ -84,7 +84,7 @@ class Tier(Enum):
     HIGH is the default everywhere — callers who don't specify a tier get the
     best available model. Use lower tiers explicitly when cost/speed matters.
     """
-    HIGH = "high"              # best quality (claude-opus, gpt-5.3-codex, gemini-2.5-pro) — DEFAULT
+    HIGH = "high"              # best quality (claude-opus, gpt-5.6-sol, gemini-2.5-pro) — DEFAULT
     MEDIUM = "medium"          # balanced (claude-sonnet, gemini-2.5-flash)
     LOW = "low"                # fast + cheap (claude-haiku, gemini-2.5-flash-lite)
     FREE_FAST = "free_fast"    # local, no cost, fast (ollama small model)
@@ -105,7 +105,7 @@ class Capability(Enum):
 class ModelInfo:
     """A concrete model offered by a provider."""
     provider: str              # "claude", "codex", "gemini", "ollama", "vllm"
-    model_id: str              # "claude-opus-4-6", "gpt-5.3-codex", "gemini-2.5-flash"
+    model_id: str              # "claude-opus-4-6", "gpt-5.6-sol", "gemini-2.5-flash"
     display_name: str
     capabilities: frozenset[Capability]
     tier: Tier
@@ -149,6 +149,9 @@ class ImageResult:
     prompt: str
     width: int
     height: int
+    job_id: str
+    status: str
+    ready: bool
 
 
 @dataclass
@@ -174,11 +177,11 @@ class AudioResult:
 tiers:
   high:
     - claude:claude-opus-4-6
-    - codex:gpt-5.3-codex
+    - codex:gpt-5.6-sol
     - gemini:gemini-2.5-pro
   medium:
     - claude:claude-sonnet-4-6
-    - codex:gpt-5.3-codex
+    - codex:gpt-5.6-sol
     - gemini:gemini-2.5-flash
   low:
     - claude:claude-haiku-4-5-20251001
@@ -205,19 +208,8 @@ providers:
   vllm:
     base_url: http://localhost:8000
 
-# Image generation — tier controls quality/speed tradeoff via steps
-# All tiers use z-image-turbo for now; steps vary by tier
-image:
-  model: z-image-turbo                    # default model for all tiers
-  tiers:
-    high:   { steps: 8 }                  # best quality, ~40s
-    medium: { steps: 4 }                  # balanced, ~20s
-    low:    { steps: 1 }                  # draft quality, ~5s
-  fallback:                               # if local fails, try these
-    - gemini:gemini-2.5-flash
-    - openai:dall-e-3
-  transparent:
-    post_process: birefnet                # background removal after generation
+# Image generation has no backend configuration. It always uses the durable
+# Mac mini Codex image service hard-pinned to http://10.0.0.46:8830.
 
 # TTS configuration
 tts:
@@ -416,19 +408,13 @@ async def image(
     width: int = 512,
     height: int = 512,
     output: str | Path | None = None,     # default: temp file
-    tier: Tier = Tier.HIGH,               # HIGH=8 steps, MEDIUM=4, LOW=1
+    tier: Tier = Tier.HIGH,               # metadata only for image requests
     transparent: bool = False,
-    model: str | None = None,             # override: "mflux", "dall-e-3", "gemini"
-    steps: int | None = None,             # override: explicit step count (bypasses tier)
-    guidance: float | None = None,
-    seed: int | None = None,
-    timeout: float = 600.0,
+    image: str | Path | list[str | Path] | None = None,
+    provider: str | None = None,           # empty or "codex" only
+    timeout: float = 300.0,
 ) -> ImageResult:
-    """Generate an image from a text prompt.
-
-    Tier controls quality via inference steps (configurable in config.yaml).
-    Pass steps= explicitly to override the tier's default.
-    """
+    """Submit one durable Codex image-service generation or edit job."""
 ```
 
 **Usage:**
@@ -439,10 +425,7 @@ result = await agent.image(
     width=768, height=1024,
     output="cover.jpg",
 )
-print(result.path)  # 8 steps (HIGH default)
-
-# quick draft for previewing
-draft = await agent.image("Robot logo", tier=Tier.LOW)  # 1 step, ~5s
+print(result.path, result.job_id, result.status, result.ready)
 ```
 
 ### agent.speak() — Text-to-Speech
@@ -535,29 +518,18 @@ class Provider(ABC):
     ) -> AsyncIterator[str]:
         """Send messages and yield response chunks."""
 
-    @abstractmethod
-    async def generate_image(
-        self,
-        prompt: str,
-        *,
-        width: int, height: int,
-        output: Path,
-        **kwargs,
-    ) -> ImageResult:
-        """Generate an image. Raise NotImplementedError if unsupported."""
 ```
 
 **Provider implementations:**
 
-| Provider | `complete()` | `stream()` | `generate_image()` | Notes |
-|----------|-------------|-----------|-------------------|-------|
-| **claude** | `claude_agent_sdk.query()` | same, yield chunks | N/A | Strips CLAUDECODE env; handles tool_use |
-| **codex** | `thread.run()` | `thread.run_streamed()` | N/A | Manages thread lifecycle; binary install check |
-| **gemini** | `client.models.generate_content()` | `generate_content_stream()` | `generate_content()` with image config | Uses google-genai SDK |
-| **ollama** | `POST /api/chat` | same with `stream: true` | N/A | Local HTTP, no auth |
-| **vllm** | OpenAI-compatible endpoint | same | N/A | Local HTTP |
-| **local** (image) | subprocess `generate_image` | N/A | `subprocess.run(["generate_image", ...])` | mflux + BiRefNet |
-| **local** (tts) | subprocess `tts` | N/A | N/A | Qwen3-TTS |
+| Provider | `complete()` | `stream()` | Notes |
+|----------|-------------|-----------|-------|
+| **claude** | `claude_agent_sdk.query()` | same, yield chunks | Strips CLAUDECODE env; handles tool_use |
+| **codex** | `thread.run()` | `thread.run_streamed()` | Text provider; image capability is separate |
+| **gemini** | `client.models.generate_content()` | `generate_content_stream()` | Text only in SDK routing |
+| **ollama** | `POST /api/chat` | same with `stream: true` | Text only in SDK routing |
+| **vllm** | OpenAI-compatible endpoint | same | Text only |
+| **local** (tts) | subprocess `tts` | N/A | Qwen3-TTS |
 
 ---
 
@@ -571,7 +543,7 @@ The core value proposition. Two strategies:
 Request to Tier.HIGH
   → Try provider #1 (claude-opus)
     → Rate limit / capacity error?
-      → IMMEDIATELY try provider #2 (codex-gpt-5.3)
+      → IMMEDIATELY try provider #2 (codex-gpt-5.6-sol)
         → Rate limit?
           → IMMEDIATELY try provider #3 (gemini-2.5-pro)
             → All failed? Raise AgentError with all attempts logged
@@ -629,8 +601,8 @@ Every conversation gets a UUID. All interactions are logged to `~/.daz-agent-sdk
 {"ts":"...","event":"rate_limit","provider":"claude","status":429,"retry_after":null}
 {"ts":"...","event":"backoff","attempt":1,"delay_ms":1000}
 {"ts":"...","event":"cascade","from_provider":"claude","to_provider":"codex","reason":"rate_limit","summarised":true}
-{"ts":"...","event":"image_request","prompt":"...","width":1024,"height":1024,"provider":"local"}
-{"ts":"...","event":"image_complete","path":"/tmp/gen.jpg","duration_ms":45000}
+{"ts":"...","event":"image_request","prompt":"...","width":1024,"height":1024,"provider":"codex"}
+{"ts":"...","event":"image_complete","job_id":"igs-job-id","path":"/tmp/gen.jpg","duration_ms":45000}
 {"ts":"...","event":"structured_output","schema":"Sentiment","parsed":{"label":"positive","confidence":0.95}}
 {"ts":"...","event":"conversation_end","turns":5,"total_tokens":12340,"providers_used":["claude","codex"]}
 ```
@@ -682,7 +654,7 @@ async def write_novel(premise: str) -> None:
         )
         save_chapter(ch.title, text.text)
 
-    # Generate cover (image)
+    # Generate cover through the sole Mac mini IGS/Codex image path.
     await agent.image(
         f"Book cover for novel about: {premise}",
         width=768, height=1024,
@@ -750,7 +722,7 @@ async def create_podcast_episode(topic: str):
         tier=Tier.HIGH,
     )
 
-    # Generate cover art
+    # Generate cover art through the sole Mac mini IGS/Codex image path.
     cover = await agent.image(
         f"Podcast cover art for episode about {topic}",
         width=1024, height=1024,
@@ -815,21 +787,9 @@ from daz_agent_sdk import agent
 answer = await agent.ask(prompt)
 ```
 
-Before (image generation):
+Direct provider-specific image generation is forbidden. Callers use the stable SDK capability, which submits exactly one durable Mac mini IGS/Codex job and never falls back:
 
 ```python
-# OLD: subprocess with 8 arguments
-subprocess.run([
-    "generate_image", "--prompt", prompt,
-    "--width", "1024", "--height", "1024",
-    "--output", str(path)
-], check=True, timeout=300)
-```
-
-After:
-
-```python
-# NEW: 1 line
 result = await agent.image(prompt, width=1024, height=1024, output=path)
 ```
 
@@ -848,7 +808,7 @@ result = await agent.image(prompt, width=1024, height=1024, output=path)
 - `google-genai` — Gemini provider (`pip install daz-agent-sdk[gemini]`)
 
 **Not dependencies (external tools, already installed):**
-- `~/bin/generate_image` — mflux image generation
+- Mac mini Codex image service — durable HTTP `/jobs` contract at `http://10.0.0.46:8830`
 - `~/bin/tts` — Qwen3-TTS
 - `~/bin/remove-background` — BiRefNet
 

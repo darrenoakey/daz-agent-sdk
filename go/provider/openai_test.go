@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -287,9 +286,6 @@ func TestClassifyOpenAIErrorTypedAPIErrorAuth(t *testing.T) {
 // ---- Unit: no-messages guard ----
 
 func TestOpenAICompleteNoMessagesError(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIModels[1] // gpt-4.1-mini
 	_, err := p.Complete(context.Background(), []sdk.Message{}, model, sdk.CompleteOpts{})
@@ -306,9 +302,6 @@ func TestOpenAICompleteNoMessagesError(t *testing.T) {
 }
 
 func TestOpenAIStreamNoMessagesError(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIModels[1]
 	_, err := p.Stream(context.Background(), []sdk.Message{}, model, sdk.StreamOpts{})
@@ -317,7 +310,7 @@ func TestOpenAIStreamNoMessagesError(t *testing.T) {
 	}
 }
 
-// ---- Integration tests (require OPENAI_API_KEY) ----
+// ---- Integration tests (require the configured Keychain credential) ----
 
 func openAIMiniModel() sdk.ModelInfo {
 	// gpt-4.1-mini is cost-efficient for integration tests.
@@ -325,39 +318,27 @@ func openAIMiniModel() sdk.ModelInfo {
 }
 
 func TestOpenAIAvailableWithKey(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	ok, err := p.Available(context.Background())
 	if err != nil {
 		t.Fatalf("Available() returned error: %v", err)
 	}
 	if !ok {
-		t.Error("Available() = false with OPENAI_API_KEY set and valid")
+		t.Error("Available() = false with the configured credential")
 	}
 }
 
 func TestOpenAIAvailableWithoutKey(t *testing.T) {
-	// Temporarily clear the key — only safe if it wasn't set to begin with.
-	orig := os.Getenv("OPENAI_API_KEY")
-	if orig != "" {
-		t.Skip("OPENAI_API_KEY is set; skipping no-key test to avoid env mutation")
-	}
-	p := NewOpenAIProvider()
-	ok, err := p.Available(context.Background())
-	if err != nil {
-		t.Fatalf("Available() returned error without key: %v", err)
-	}
-	if ok {
-		t.Error("Available() = true without OPENAI_API_KEY")
+	_, err := readCredential(context.Background(), credentialReference{
+		service: "daz-agent-sdk-missing-openai",
+		account: "api-key",
+	})
+	if err == nil {
+		t.Fatal("missing OpenAI credential should fail closed")
 	}
 }
 
 func TestOpenAICompleteBasicText(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{{Role: "user", Content: "Say exactly: HELLO"}}
@@ -380,9 +361,6 @@ func TestOpenAICompleteBasicText(t *testing.T) {
 }
 
 func TestOpenAICompleteSystemMessage(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{
@@ -399,9 +377,6 @@ func TestOpenAICompleteSystemMessage(t *testing.T) {
 }
 
 func TestOpenAICompleteUsagePopulated(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{{Role: "user", Content: "Reply with one word."}}
@@ -421,9 +396,6 @@ func TestOpenAICompleteUsagePopulated(t *testing.T) {
 }
 
 func TestOpenAICompleteStructuredMathSchema(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	schema := map[string]any{
@@ -448,9 +420,6 @@ func TestOpenAICompleteStructuredMathSchema(t *testing.T) {
 }
 
 func TestOpenAICompleteStructuredComplexSchema(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	schema := map[string]any{
@@ -477,9 +446,6 @@ func TestOpenAICompleteStructuredComplexSchema(t *testing.T) {
 }
 
 func TestOpenAICompleteInvalidSchema(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{{Role: "user", Content: "hello"}}
@@ -498,9 +464,6 @@ func TestOpenAICompleteInvalidSchema(t *testing.T) {
 }
 
 func TestOpenAIStreamBasicText(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{{Role: "user", Content: "Count to 3 briefly."}}
@@ -521,9 +484,6 @@ func TestOpenAIStreamBasicText(t *testing.T) {
 }
 
 func TestOpenAIStreamCollectsAllChunks(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{{Role: "user", Content: "Write a haiku about Go programming."}}
@@ -551,9 +511,6 @@ func TestOpenAIStreamCollectsAllChunks(t *testing.T) {
 }
 
 func TestOpenAIStreamTimeout(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{{Role: "user", Content: "Write a very long essay about the history of computing."}}
@@ -578,9 +535,6 @@ func TestOpenAIStreamTimeout(t *testing.T) {
 }
 
 func TestOpenAICompleteTimeout(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
 	p := NewOpenAIProvider()
 	model := openAIMiniModel()
 	msgs := []sdk.Message{{Role: "user", Content: "Tell me everything about computing."}}

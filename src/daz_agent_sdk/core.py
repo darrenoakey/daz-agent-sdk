@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any, Type
+from typing import Any, Protocol, Type, cast
 
-from daz_agent_sdk.capabilities.image import generate_image, _remove_background_spark
+from daz_agent_sdk.capabilities.image import (
+    download_image_job,
+    generate_image,
+    get_image_job,
+    resume_image_job,
+    resume_image_operation,
+    submit_image_job,
+)
 from daz_agent_sdk.capabilities.stt import transcribe as _transcribe
 from daz_agent_sdk.capabilities.tts import synthesize_speech
 from daz_agent_sdk.config import Config, get_tier_chain, load_config
@@ -17,7 +24,9 @@ from daz_agent_sdk.types import (
     Capability,
     EmbeddingResult,
     ErrorKind,
+    ImageJobStatus,
     ImageResult,
+    ImageSubmission,
     Message,
     ModelInfo,
     Response,
@@ -27,6 +36,17 @@ from daz_agent_sdk.types import (
 )
 
 
+class EmbeddingProvider(Protocol):
+    async def embed(
+        self,
+        texts: list[str],
+        *,
+        task: str,
+        batch_size: int,
+        timeout: float,
+    ) -> dict[str, Any]: ...
+
+
 # ##################################################################
 # agent
 # top-level singleton that provides the primary API surface for
@@ -34,7 +54,6 @@ from daz_agent_sdk.types import (
 # all methods are async except conversation() which returns a context
 # manager. a single module-level instance is created in __init__.py.
 class Agent:
-
     # ##################################################################
     # init
     # accepts an optional Config; falls back to load_config() defaults
@@ -169,10 +188,9 @@ class Agent:
 
     # ##################################################################
     # image
-    # generate an image from a text prompt using mflux z-image-turbo
-    # (default) or Nano Banana 2 via Gemini API. width and height are
-    # required. output path is optional; a temp file is used when omitted.
-    # transparent triggers background removal via BiRefNet.
+    # submit one generation or edit job to the durable Mac mini Codex image service.
+    # width and height are required; output is optional. transparent is handled
+    # by the service as part of the same durable job.
     async def image(
         self,
         prompt: str,
@@ -183,10 +201,12 @@ class Agent:
         image: str | Path | list[str | Path] | None = None,
         tier: Tier = Tier.HIGH,
         transparent: bool = False,
-        timeout: float = 300.0,
+        timeout: float | None = None,
         provider: str | None = None,
         model: str | None = None,
         steps: int | None = None,
+        idempotency_key: str | None = None,
+        operation_state: str | Path | None = None,
     ) -> ImageResult:
         return await generate_image(
             prompt,
@@ -200,8 +220,86 @@ class Agent:
             provider=provider,
             model=model,
             steps=steps,
+            idempotency_key=idempotency_key,
+            operation_state=operation_state,
             config=self._config,
             conversation_id=uuid.uuid4(),
+        )
+
+    # ##################################################################
+    # image job status
+    # inspect durable generation state without creating a replacement job
+    async def image_job_status(self, job_id: str) -> ImageJobStatus:
+        return await get_image_job(job_id, config=self._config)
+
+    # ##################################################################
+    # submit image job
+    # expose the durable submission identity without waiting for generation
+    async def submit_image_job(
+        self,
+        prompt: str,
+        *,
+        width: int,
+        height: int,
+        image: str | Path | list[str | Path] | None = None,
+        transparent: bool = False,
+        idempotency_key: str,
+    ) -> ImageSubmission:
+        return await submit_image_job(
+            prompt,
+            width=width,
+            height=height,
+            image=image,
+            transparent=transparent,
+            idempotency_key=idempotency_key,
+            config=self._config,
+        )
+
+    # ##################################################################
+    # resume image job
+    # continue waiting on a durable id and download its validated artifact
+    async def resume_image_job(
+        self,
+        job_id: str,
+        *,
+        output: str | Path,
+        timeout: float | None = None,
+        transparent: bool = False,
+    ) -> ImageResult:
+        return await resume_image_job(
+            job_id,
+            output,
+            timeout=timeout,
+            transparent=transparent,
+            config=self._config,
+        )
+
+    # ##################################################################
+    # resume image operation
+    # continue the exact request recorded before submission, including recovery
+    # from an accepted response whose job identity was not yet persisted
+    async def resume_image_operation(
+        self,
+        state_path: str | Path,
+        *,
+        timeout: float | None = None,
+    ) -> ImageResult:
+        return await resume_image_operation(
+            state_path, timeout=timeout, config=self._config
+        )
+
+    # ##################################################################
+    # download image job
+    # fetch a completed durable artifact without polling or resubmitting
+    async def download_image_job(
+        self,
+        job_id: str,
+        *,
+        output: str | Path,
+        transparent: bool = False,
+    ) -> ImageResult:
+        return await download_image_job(
+            job_id, output, transparent=transparent, config=self._config
         )
 
     # ##################################################################
@@ -250,18 +348,20 @@ class Agent:
 
     # ##################################################################
     # remove_background
-    # remove background from an image using BiRefNet on spark (GPU).
-    # overwrites the image in-place with a PNG with alpha channel.
+    # retain the former public method as an explicit fail-closed migration aid.
     async def remove_background(
         self,
         image: str | Path,
         *,
         timeout: float = 120.0,
     ) -> Path:
-        image_path = Path(image)
-        arbiter_url = self._config.providers.get("arbiter", {}).get("base_url") if self._config else None
-        await _remove_background_spark(image_path, timeout=timeout, base_url=arbiter_url)
-        return image_path
+        from daz_agent_sdk.capabilities.image import _validate_legacy_image_config
+
+        _validate_legacy_image_config(self._config)
+        raise AgentError(
+            "background removal is actively disabled — use the durable Mac mini Codex image service for still-image edits",
+            kind=ErrorKind.INVALID_REQUEST,
+        )
 
     # ##################################################################
     # embed
@@ -290,7 +390,8 @@ class Agent:
                 kind=ErrorKind.INTERNAL,
             )
 
-        raw = await prov.embed(  # type: ignore[attr-defined]
+        embedding_provider = cast(EmbeddingProvider, prov)
+        raw = await embedding_provider.embed(
             texts,
             task=task,
             batch_size=batch_size,
@@ -298,7 +399,9 @@ class Agent:
         )
 
         embeddings = raw.get("embeddings") or []
-        dimension = int(raw.get("dimension") or (len(embeddings[0]) if embeddings else 0))
+        dimension = int(
+            raw.get("dimension") or (len(embeddings[0]) if embeddings else 0)
+        )
         model_id = raw.get("model_repository") or "embed-text"
 
         model_info = ModelInfo(

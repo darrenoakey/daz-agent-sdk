@@ -17,15 +17,6 @@ import (
 // defaultModelSize is the whisper model size when the caller does not specify.
 const defaultModelSize = "small"
 
-// localSTTModelInfo describes the local Whisper subprocess tool.
-var localSTTModelInfo = agentsdk.ModelInfo{
-	Provider:     "local",
-	ModelID:      "whisper",
-	DisplayName:  "Local Whisper STT",
-	Capabilities: []agentsdk.Capability{agentsdk.CapabilitySTT},
-	Tier:         agentsdk.TierHigh,
-}
-
 // TranscribeOpts holds optional parameters for Transcribe.
 type TranscribeOpts struct {
 	// ModelSize is the whisper model variant (base, small, large-v3-turbo).

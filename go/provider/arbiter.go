@@ -1,8 +1,8 @@
 package provider
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -71,8 +71,15 @@ func (a *ArbiterProvider) Available(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return false, nil
+		}
+		return false, nil
+	}
+	if err := resp.Body.Close(); err != nil {
+		return false, nil
+	}
 	return resp.StatusCode == 200, nil
 }
 
@@ -101,15 +108,23 @@ func (a *ArbiterProvider) ListModels(ctx context.Context) ([]sdk.ModelInfo, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		if err := resp.Body.Close(); err != nil {
+			return nil, fmt.Errorf("closing /v1/models error response: %w", err)
+		}
 		return nil, fmt.Errorf("arbiter /v1/models returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return nil, fmt.Errorf("reading /v1/models response: %v; closing response: %w", err, closeErr)
+		}
 		return nil, fmt.Errorf("reading /v1/models response: %w", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("closing /v1/models response: %w", err)
 	}
 
 	// Try raw array first (arbiter-native form), then OpenAI envelope {"data": [...]}.
@@ -268,19 +283,33 @@ func (a *ArbiterProvider) Complete(ctx context.Context, messages []sdk.Message, 
 		kind := classifyHTTPError(err)
 		return nil, sdk.NewAgentError(err.Error(), kind, nil)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode == 429 {
+		if err := resp.Body.Close(); err != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Arbiter rate-limit response: %v", err), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("Arbiter rate limit: %d", resp.StatusCode), sdk.ErrorRateLimit, nil)
 	}
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to read Arbiter error response: %v", readErr), sdk.ErrorInternal, nil)
+		}
+		if closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Arbiter error response: %v", closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("Arbiter error %d: %s", resp.StatusCode, string(respBody)), sdk.ErrorInternal, nil)
 	}
 
 	var chatResp openAIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to decode response: %v; closing response: %v", err, closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("failed to decode response: %v", err), sdk.ErrorInternal, nil)
+	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, sdk.NewAgentError(fmt.Sprintf("failed to close response: %v", err), sdk.ErrorInternal, nil)
 	}
 
 	text := ""
@@ -351,21 +380,34 @@ func (a *ArbiterProvider) Stream(ctx context.Context, messages []sdk.Message, mo
 	}
 
 	if resp.StatusCode == 429 {
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			cancel()
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Arbiter rate-limit response: %v", err), sdk.ErrorInternal, nil)
+		}
 		cancel()
 		return nil, sdk.NewAgentError(fmt.Sprintf("Arbiter rate limit: %d", resp.StatusCode), sdk.ErrorRateLimit, nil)
 	}
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		respBody, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
 		cancel()
+		if readErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to read Arbiter error response: %v", readErr), sdk.ErrorInternal, nil)
+		}
+		if closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close Arbiter error response: %v", closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(fmt.Sprintf("Arbiter error %d: %s", resp.StatusCode, string(respBody)), sdk.ErrorInternal, nil)
 	}
 
 	ch := make(chan sdk.StreamChunk)
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				ch <- sdk.StreamChunk{Err: fmt.Errorf("closing Arbiter stream response: %w", err)}
+			}
+		}()
 		defer cancel()
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -511,9 +553,15 @@ func (a *ArbiterProvider) Embed(ctx context.Context, texts []string, opts EmbedO
 		return nil, sdk.NewAgentError(err.Error(), kind, nil)
 	}
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		respBody, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
 		submitCancel()
+		if readErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to read embed submit error: %v", readErr), sdk.ErrorInternal, nil)
+		}
+		if closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close embed submit response: %v", closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(
 			fmt.Sprintf("Arbiter embed submit error %d: %s", resp.StatusCode, string(respBody)),
 			sdk.ErrorInternal, nil,
@@ -521,14 +569,20 @@ func (a *ArbiterProvider) Embed(ctx context.Context, texts []string, opts EmbedO
 	}
 	var submit embedSubmitResponse
 	if err := json.NewDecoder(resp.Body).Decode(&submit); err != nil {
-		resp.Body.Close()
+		closeErr := resp.Body.Close()
 		submitCancel()
+		if closeErr != nil {
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to decode embed submit response: %v; closing response: %v", err, closeErr), sdk.ErrorInternal, nil)
+		}
 		return nil, sdk.NewAgentError(
 			fmt.Sprintf("failed to decode embed submit response: %v", err),
 			sdk.ErrorInternal, nil,
 		)
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		submitCancel()
+		return nil, sdk.NewAgentError(fmt.Sprintf("failed to close embed submit response: %v", err), sdk.ErrorInternal, nil)
+	}
 	submitCancel()
 	if submit.JobID == "" {
 		return nil, sdk.NewAgentError(
@@ -565,9 +619,15 @@ func (a *ArbiterProvider) Embed(ctx context.Context, texts []string, opts EmbedO
 			return nil, sdk.NewAgentError(err.Error(), kind, nil)
 		}
 		if pollResp.StatusCode >= 400 {
-			respBody, _ := io.ReadAll(pollResp.Body)
-			pollResp.Body.Close()
+			respBody, readErr := io.ReadAll(pollResp.Body)
+			closeErr := pollResp.Body.Close()
 			pollCancel()
+			if readErr != nil {
+				return nil, sdk.NewAgentError(fmt.Sprintf("failed to read embed poll error: %v", readErr), sdk.ErrorInternal, nil)
+			}
+			if closeErr != nil {
+				return nil, sdk.NewAgentError(fmt.Sprintf("failed to close embed poll response: %v", closeErr), sdk.ErrorInternal, nil)
+			}
 			return nil, sdk.NewAgentError(
 				fmt.Sprintf("Arbiter embed poll error %d: %s", pollResp.StatusCode, string(respBody)),
 				sdk.ErrorInternal, nil,
@@ -575,14 +635,20 @@ func (a *ArbiterProvider) Embed(ctx context.Context, texts []string, opts EmbedO
 		}
 		var status embedJobStatus
 		if err := json.NewDecoder(pollResp.Body).Decode(&status); err != nil {
-			pollResp.Body.Close()
+			closeErr := pollResp.Body.Close()
 			pollCancel()
+			if closeErr != nil {
+				return nil, sdk.NewAgentError(fmt.Sprintf("failed to decode embed poll response: %v; closing response: %v", err, closeErr), sdk.ErrorInternal, nil)
+			}
 			return nil, sdk.NewAgentError(
 				fmt.Sprintf("failed to decode embed poll response: %v", err),
 				sdk.ErrorInternal, nil,
 			)
 		}
-		pollResp.Body.Close()
+		if err := pollResp.Body.Close(); err != nil {
+			pollCancel()
+			return nil, sdk.NewAgentError(fmt.Sprintf("failed to close embed poll response: %v", err), sdk.ErrorInternal, nil)
+		}
 		pollCancel()
 
 		switch status.Status {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -14,345 +15,448 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	agentsdk "github.com/darrenoakey/daz-agent-sdk/go"
+	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 )
 
-// codexImageDir is where codex writes generated PNGs, one folder per session.
-func codexImageDir() string {
-	return filepath.Join(os.Getenv("HOME"), ".codex", "generated_images")
-}
+const (
+	imagePollInterval   = 2 * time.Second
+	imageRequestTimeout = 60 * time.Second
+	imageSubmitAttempts = 3
+	maxImageBytes       = 128 << 20
+)
 
-const imageServiceURL = "http://10.0.0.46:8830"
+var pngMagic = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 
-// codexModelInfo describes the shared mac mini image service for result metadata.
 var codexModelInfo = agentsdk.ModelInfo{
-	Provider:     "codex",
-	ModelID:      "macmini-image-service",
-	DisplayName:  "Mac mini image generation service",
-	Capabilities: []agentsdk.Capability{agentsdk.CapabilityImage},
-	Tier:         agentsdk.TierHigh,
+	Provider: "codex", ModelID: "macmini-image-service", DisplayName: "Mac mini Codex image service",
+	Capabilities: []agentsdk.Capability{agentsdk.CapabilityImage}, Tier: agentsdk.TierHigh,
 }
 
-// codexImagePrompt returns the prompt that reliably gets the codex CLI to
-// invoke its built-in image_gen.imagegen tool — never the skill, the arbiter,
-// or an external shell script.
-func codexImagePrompt(prompt string, width, height int, hasInputs bool, numInputs int) string {
-	aspectHint := " (square)"
-	if width > height {
-		aspectHint = " (landscape orientation)"
-	} else if height > width {
-		aspectHint = " (portrait orientation)"
-	}
-
-	if hasInputs {
-		action := "EDIT the attached image"
-		if numInputs > 1 {
-			action = fmt.Sprintf("COMBINE/EDIT the %d attached images into a single new image", numInputs)
-		}
-		return fmt.Sprintf(
-			"You MUST call your built-in `image_gen.imagegen` tool exactly once to %s. "+
-				"It is a NATIVE tool that you DO have access to in this environment — there is no need "+
-				"to apologise or claim you cannot generate images. Do NOT run any shell command. "+
-				"Do NOT call `~/bin/generate_image`, the `generate_image` skill, the `arbiter` tool, "+
-				"or any external script. The ONLY acceptable action is invoking `image_gen.imagegen` "+
-				"with a single `prompt` argument that fully describes the desired output image "+
-				"(approx %dx%d%s). Use the attached image(s) as visual reference. "+
-				"\n\nEdit description: %s\n\n"+
-				"After the tool returns, reply with one short sentence confirming success.",
-			action, width, height, aspectHint, prompt,
-		)
-	}
-	return fmt.Sprintf(
-		"You MUST call your built-in `image_gen.imagegen` tool exactly once. "+
-			"It is a NATIVE tool that you DO have access to in this environment — there is no "+
-			"need to apologise or claim you cannot generate images. Do NOT run any shell command. "+
-			"Do NOT call `~/bin/generate_image`, the `generate_image` skill, the `arbiter` tool, "+
-			"or any external script. The ONLY acceptable action is invoking `image_gen.imagegen` "+
-			"with a single `prompt` argument that fully describes the desired image "+
-			"(approx %dx%d%s). "+
-			"\n\nDesired image: %s\n\n"+
-			"After the tool returns, reply with one short sentence confirming success.",
-		width, height, aspectHint, prompt,
-	)
+type imageServiceStatus struct {
+	Id             string           `json:"id"`
+	Status         string           `json:"status"`
+	Attempts       int              `json:"attempts"`
+	Error          string           `json:"error"`
+	Provider       string           `json:"provider"`
+	PromptVersion  int              `json:"prompt_version"`
+	AttemptHistory []map[string]any `json:"attempt_history"`
+	CreatedAt      string           `json:"created_at"`
+	UpdatedAt      string           `json:"updated_at"`
 }
 
-// generateCodex routes image generation through the shared mac mini image
-// service. The service owns the ChatGPT/Codex image backend; callers must not
-// shell out to codex directly from this SDK path.
-func generateCodex(ctx context.Context, prompt string, opts ImageOpts, timeout time.Duration) (*agentsdk.ImageResult, error) {
-	inputs := opts.inputImages()
-	sourceImages := make([]string, 0, len(inputs))
-	for _, p := range inputs {
-		data, err := os.ReadFile(p)
+func encodeSourceImages(paths []string) ([]string, error) {
+	encoded := make([]string, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, agentsdk.NewAgentError(
-				fmt.Sprintf("input image not found: %s", p),
-				agentsdk.ErrorInvalidRequest, nil,
-			)
+			return nil, agentsdk.NewAgentError("input image not found: "+path, agentsdk.ErrorInvalidRequest, nil)
 		}
-		sourceImages = append(sourceImages, base64.StdEncoding.EncodeToString(data))
+		if len(data) == 0 {
+			return nil, agentsdk.NewAgentError("input image is empty: "+path, agentsdk.ErrorInvalidRequest, nil)
+		}
+		encoded = append(encoded, base64.StdEncoding.EncodeToString(data))
 	}
-
-	outputPath, err := resolveOutputPath(opts.Output)
-	if err != nil {
-		return nil, err
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	jobID, err := createImageServiceJob(reqCtx, prompt, opts.Width, opts.Height, opts.Transparent, sourceImages)
-	if err != nil {
-		return nil, err
-	}
-	if err := waitImageServiceJob(reqCtx, jobID); err != nil {
-		return nil, err
-	}
-	data, err := fetchImageServiceImage(reqCtx, jobID)
-	if err != nil {
-		return nil, err
-	}
-	if err := writeServiceImage(data, outputPath, opts.Transparent); err != nil {
-		return nil, err
-	}
-
-	return &agentsdk.ImageResult{
-		Path:      outputPath,
-		ModelUsed: codexModelInfo,
-		Prompt:    prompt,
-		Width:     opts.Width,
-		Height:    opts.Height,
-	}, nil
+	return encoded, nil
 }
 
-func createImageServiceJob(ctx context.Context, prompt string, width, height int, transparent bool, sourceImages []string) (string, error) {
-	body := map[string]any{
-		"prompt":      prompt,
-		"width":       width,
-		"height":      height,
-		"transparent": transparent,
+// SubmitImageJob creates a durable image job and requires a caller-owned recovery key.
+func SubmitImageJob(parent context.Context, prompt string, options ImageOpts) (*agentsdk.ImageSubmission, error) {
+	if err := validateImageRoute(options); err != nil {
+		return nil, err
 	}
-	if len(sourceImages) > 0 {
-		body["source_images"] = sourceImages
+	if strings.TrimSpace(prompt) == "" || options.Width <= 0 || options.Height <= 0 {
+		return nil, agentsdk.NewAgentError("image prompt and positive width/height are required", agentsdk.ErrorInvalidRequest, nil)
 	}
-	var response struct {
-		ID string `json:"id"`
+	if strings.TrimSpace(options.IdempotencyKey) == "" {
+		return nil, agentsdk.NewAgentError("idempotency key is required for direct image submission", agentsdk.ErrorInvalidRequest, nil)
 	}
-	if err := imageServiceJSON(ctx, http.MethodPost, "/jobs", body, &response); err != nil {
-		return "", err
+	sources, err := encodeSourceImages(options.inputImages())
+	if err != nil {
+		return nil, err
 	}
-	if response.ID == "" {
-		return "", agentsdk.NewAgentError("image service returned no job id", agentsdk.ErrorInternal, nil)
-	}
-	return response.ID, nil
+	return submitEncodedImageJob(parent, prompt, options, sources)
 }
 
-func waitImageServiceJob(ctx context.Context, jobID string) error {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+// RecoverImageSubmission replays the exact persisted request bytes with their original key.
+func RecoverImageSubmission(parent context.Context, requestBody []byte, idempotencyKey string, configurations ...*agentsdk.Config) (*agentsdk.ImageSubmission, error) {
+	if err := validateOptionalImageConfig(configurations); err != nil {
+		return nil, err
+	}
+	if len(requestBody) == 0 || strings.TrimSpace(idempotencyKey) == "" {
+		return nil, agentsdk.NewAgentError("persisted request body and idempotency key are required", agentsdk.ErrorInvalidRequest, nil)
+	}
+	var lastError error
+	for range imageSubmitAttempts {
+		submission, terminal, err := postImageServiceJob(parent, requestBody, idempotencyKey)
+		if err == nil || terminal {
+			return submission, err
+		}
+		lastError = err
+	}
+	attempts := []map[string]any{{"idempotency_key": idempotencyKey, "recoverable": true}}
+	return nil, agentsdk.NewAgentError("image service submission remains recoverable: "+lastError.Error(), agentsdk.ErrorNotAvailable, attempts)
+}
+
+// WaitImageSubmission replays exact persisted bytes until accepted or permanently rejected.
+func WaitImageSubmission(parent context.Context, requestBody []byte, idempotencyKey string, configurations ...*agentsdk.Config) (*agentsdk.ImageSubmission, error) {
+	if err := validateOptionalImageConfig(configurations); err != nil {
+		return nil, err
+	}
 	for {
-		var status struct {
-			Status   string `json:"status"`
-			Attempts int    `json:"attempts"`
-			Error    string `json:"error"`
+		submission, err := RecoverImageSubmission(parent, requestBody, idempotencyKey, configurations...)
+		if err == nil {
+			return submission, nil
 		}
-		if err := imageServiceJSON(ctx, http.MethodGet, "/jobs/"+jobID, nil, &status); err != nil {
-			return err
-		}
-		switch status.Status {
-		case "done":
-			return nil
-		case "failed":
-			return agentsdk.NewAgentError(
-				fmt.Sprintf("image service job %s failed after %d attempts: %s", jobID, status.Attempts, status.Error),
-				agentsdk.ErrorInternal, nil,
-			)
-		case "queued", "running":
-		default:
-			return agentsdk.NewAgentError(
-				fmt.Sprintf("image service job %s returned unknown status %q", jobID, status.Status),
-				agentsdk.ErrorInternal, nil,
-			)
+		var agentError *agentsdk.AgentError
+		if !errors.As(err, &agentError) || agentError.Kind != agentsdk.ErrorNotAvailable {
+			return nil, err
 		}
 		select {
-		case <-ctx.Done():
-			return agentsdk.NewAgentError(
-				fmt.Sprintf("image service job %s timed out: %v", jobID, ctx.Err()),
-				agentsdk.ErrorTimeout, nil,
-			)
+		case <-parent.Done():
+			return nil, parent.Err()
+		case <-time.After(imagePollInterval):
+		}
+	}
+}
+
+func encodeImageJobBody(prompt string, options ImageOpts, sources []string) ([]byte, error) {
+	payload := map[string]any{
+		"prompt": prompt, "width": options.Width, "height": options.Height, "transparent": options.Transparent,
+	}
+	if len(sources) > 0 {
+		payload["source_images"] = sources
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encoding image service request: %w", err)
+	}
+	return body, nil
+}
+
+func submitEncodedImageJob(parent context.Context, prompt string, options ImageOpts, sources []string) (*agentsdk.ImageSubmission, error) {
+	body, err := encodeImageJobBody(prompt, options, sources)
+	if err != nil {
+		return nil, fmt.Errorf("encoding image service request: %w", err)
+	}
+	return RecoverImageSubmission(parent, body, options.IdempotencyKey, options.Config)
+}
+
+func postImageServiceJob(parent context.Context, body []byte, key string) (*agentsdk.ImageSubmission, bool, error) {
+	data, status, err := curlImageServiceBytes(parent, http.MethodPost, "/jobs", body, key)
+	if err != nil {
+		return nil, false, err
+	}
+	return parseImageSubmission(data, status, key)
+}
+
+func parseImageSubmission(data []byte, status int, key string) (*agentsdk.ImageSubmission, bool, error) {
+	var response struct {
+		Id             string `json:"id"`
+		IdempotencyKey string `json:"idempotency_key"`
+		Replayed       bool   `json:"replayed"`
+		Error          string `json:"error"`
+		Code           string `json:"code"`
+	}
+	if status == http.StatusConflict || status == http.StatusGone {
+		return nil, true, terminalSubmissionError(status, data, key)
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, true, agentsdk.NewAgentError("image service returned invalid submission JSON", agentsdk.ErrorInternal, nil)
+	}
+	if status != http.StatusAccepted || response.Id == "" || response.IdempotencyKey != key {
+		attempts := []map[string]any{{"idempotency_key": key, "status": status, "recoverable": true}}
+		return nil, true, agentsdk.NewAgentError("image service returned invalid durable submission identity", agentsdk.ErrorInternal, attempts)
+	}
+	return &agentsdk.ImageSubmission{JobID: response.Id, IdempotencyKey: key, Replayed: response.Replayed}, true, nil
+}
+
+func terminalSubmissionError(status int, data []byte, key string) error {
+	var response struct {
+		Id    string `json:"id"`
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	_ = json.Unmarshal(data, &response)
+	label := "conflict"
+	if status == http.StatusGone {
+		label = "expired"
+	}
+	if response.Error == "" {
+		response.Error = fmt.Sprintf("image submission idempotency key %s (HTTP %d)", label, status)
+	}
+	if response.Code == "" {
+		response.Code = "idempotency_" + label
+	}
+	attempts := []map[string]any{{"idempotency_key": key, "job_id": response.Id, "status": status, "code": response.Code, "recoverable": false}}
+	return agentsdk.NewAgentError(response.Error, agentsdk.ErrorInvalidRequest, attempts)
+}
+
+func waitImageServiceJob(parent context.Context, jobId string) (imageServiceStatus, error) {
+	ticker := time.NewTicker(imagePollInterval)
+	defer ticker.Stop()
+	for {
+		status, err := fetchImageServiceStatus(parent, jobId)
+		if err != nil {
+			if parent.Err() != nil {
+				return status, parent.Err()
+			}
+			if !isTransientImageError(err) {
+				return status, err
+			}
+			<-ticker.C
+			continue
+		}
+		terminal, terminalError := classifyImageStatus(jobId, status)
+		if terminal {
+			return status, terminalError
+		}
+		select {
+		case <-parent.Done():
+			return status, parent.Err()
 		case <-ticker.C:
 		}
 	}
 }
 
-func imageServiceJSON(ctx context.Context, method, path string, payload any, target any) error {
-	var body io.Reader
-	if payload != nil {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return err
+func waitImageServiceImage(parent context.Context, jobId string) ([]byte, error) {
+	ticker := time.NewTicker(imagePollInterval)
+	defer ticker.Stop()
+	for {
+		data, err := fetchImageServiceImage(parent, jobId)
+		if err == nil {
+			return data, nil
 		}
-		body = bytes.NewReader(data)
+		select {
+		case <-parent.Done():
+			return nil, parent.Err()
+		case <-ticker.C:
+		}
 	}
-	request, err := http.NewRequestWithContext(ctx, method, imageServiceURL+path, body)
+}
+
+func classifyImageStatus(jobId string, status imageServiceStatus) (bool, error) {
+	switch status.Status {
+	case "done":
+		return true, nil
+	case "failed":
+		message := fmt.Sprintf("image service job %s failed after %d attempts: %s", jobId, status.Attempts, status.Error)
+		attempts := []map[string]any{{"job_id": jobId, "status": status.Status, "recoverable": false}}
+		return true, agentsdk.NewAgentError(message, agentsdk.ErrorInternal, attempts)
+	case "cancelled", "canceled":
+		attempts := []map[string]any{{"job_id": jobId, "status": status.Status, "recoverable": false}}
+		return true, agentsdk.NewAgentError("image service job "+jobId+" was explicitly cancelled", agentsdk.ErrorInternal, attempts)
+	case "queued", "running":
+		return false, nil
+	default:
+		return true, agentsdk.NewAgentError(
+			fmt.Sprintf("image service job %s returned unknown status %q", jobId, status.Status), agentsdk.ErrorInternal, nil,
+		)
+	}
+}
+
+func fetchImageServiceStatus(parent context.Context, jobId string) (imageServiceStatus, error) {
+	var status imageServiceStatus
+	err := imageServiceJson(parent, http.MethodGet, "/jobs/"+jobId, nil, &status)
+	return status, err
+}
+
+func recoverableJobError(jobId, status string, cause error) error {
+	attempts := []map[string]any{{"job_id": jobId, "status": status, "recoverable": true}}
+	return agentsdk.NewAgentError("image service job "+jobId+" remains durable: "+cause.Error(), agentsdk.ErrorNotAvailable, attempts)
+}
+
+func imageServiceJson(parent context.Context, method, path string, payload any, target any) error {
+	data, status, err := curlImageService(parent, method, path, payload)
 	if err != nil {
 		return err
 	}
-	if payload != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return agentsdk.NewAgentError(fmt.Sprintf("image service request failed: %v", err), agentsdk.ErrorInternal, nil)
-	}
-	defer func() { _ = response.Body.Close() }()
-	data, _ := io.ReadAll(response.Body)
-	if response.StatusCode >= 400 {
-		return agentsdk.NewAgentError(
-			fmt.Sprintf("image service %s %s returned HTTP %d: %s", method, path, response.StatusCode, string(data)),
-			agentsdk.ErrorInternal, nil,
-		)
+	if status < 200 || status >= 300 {
+		kind := agentsdk.ErrorInternal
+		if status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests || status >= 500 {
+			kind = agentsdk.ErrorNotAvailable
+		}
+		return agentsdk.NewAgentError(fmt.Sprintf("image service returned HTTP %d: %s", status, data), kind, nil)
 	}
 	if err := json.Unmarshal(data, target); err != nil {
-		return agentsdk.NewAgentError(
-			fmt.Sprintf("image service %s %s returned invalid JSON: %v", method, path, err),
-			agentsdk.ErrorInternal, nil,
-		)
+		return agentsdk.NewAgentError("image service returned invalid JSON: "+err.Error(), agentsdk.ErrorInternal, nil)
 	}
 	return nil
 }
 
-func fetchImageServiceImage(ctx context.Context, jobID string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, imageServiceURL+"/jobs/"+jobID+"/image", nil)
+func fetchImageServiceImage(parent context.Context, jobId string) ([]byte, error) {
+	data, status, err := curlImageService(parent, http.MethodGet, "/jobs/"+jobId+"/image", nil)
 	if err != nil {
-		return nil, err
+		return nil, recoverableJobError(jobId, "done", err)
 	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return nil, agentsdk.NewAgentError(fmt.Sprintf("image service image fetch failed: %v", err), agentsdk.ErrorInternal, nil)
+	if status < 200 || status >= 300 {
+		return nil, recoverableJobError(jobId, "done", fmt.Errorf("artifact returned HTTP %d", status))
 	}
-	defer func() { _ = response.Body.Close() }()
-	data, _ := io.ReadAll(response.Body)
-	if response.StatusCode >= 400 {
-		return nil, agentsdk.NewAgentError(
-			fmt.Sprintf("image service GET /jobs/%s/image returned HTTP %d: %s", jobID, response.StatusCode, string(data)),
-			agentsdk.ErrorInternal, nil,
-		)
-	}
-	if !bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
-		return nil, agentsdk.NewAgentError("image service returned non-PNG data", agentsdk.ErrorInternal, nil)
+	if err := validatePng(data); err != nil {
+		return nil, recoverableJobError(jobId, "done", err)
 	}
 	return data, nil
 }
 
-func writeServiceImage(data []byte, outputPath string, transparent bool) error {
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+func curlImageService(parent context.Context, method, path string, payload any) ([]byte, int, error) {
+	var input []byte
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, 0, fmt.Errorf("encoding image service request: %w", err)
+		}
+		input = encoded
+	}
+	return curlImageServiceBytes(parent, method, path, input, "")
+}
+
+func curlImageServiceBytes(parent context.Context, method, path string, input []byte, idempotencyKey string) ([]byte, int, error) {
+	arguments := []string{
+		"--silent", "--show-error", "--proxy", "", "--noproxy", "*",
+		"--proto", "=http", "--proto-redir", "=http", "--max-redirs", "0",
+		"--request", method, "--max-time", "60",
+		"--write-out", "\n%{http_code}",
+	}
+	if input != nil {
+		arguments = append(arguments, "--header", "Content-Type: application/json", "--data-binary", "@-")
+	}
+	if idempotencyKey != "" {
+		arguments = append(arguments, "--header", "Idempotency-Key: "+idempotencyKey)
+	}
+	arguments = append(arguments, "http://10.0.0.46:8830"+path)
+	requestContext, cancel := context.WithTimeout(parent, imageRequestTimeout)
+	defer cancel()
+	command := exec.CommandContext(requestContext, "/usr/bin/curl", arguments...)
+	command.Stdin = bytes.NewReader(input)
+	var standardOutput bytes.Buffer
+	var standardError bytes.Buffer
+	command.Stdout = &standardOutput
+	command.Stderr = &standardError
+	if err := command.Run(); err != nil {
+		return nil, 0, agentsdk.NewAgentError("image service transport failed: "+standardError.String(), agentsdk.ErrorNotAvailable, nil)
+	}
+	data, status, err := splitCurlOutput(standardOutput.Bytes())
+	if err != nil {
+		return nil, 0, err
+	}
+	return data, status, nil
+}
+
+func splitCurlOutput(output []byte) ([]byte, int, error) {
+	separator := bytes.LastIndexByte(output, '\n')
+	if separator < 0 {
+		return nil, 0, agentsdk.NewAgentError("image service returned malformed transport metadata", agentsdk.ErrorInternal, nil)
+	}
+	status, err := strconv.Atoi(string(output[separator+1:]))
+	if err != nil {
+		return nil, 0, agentsdk.NewAgentError("image service returned invalid HTTP status metadata", agentsdk.ErrorInternal, nil)
+	}
+	return output[:separator], status, nil
+}
+
+func validatePng(data []byte) error {
+	if len(data) == 0 || len(data) > maxImageBytes || !bytes.HasPrefix(data, pngMagic) {
+		return agentsdk.NewAgentError("image service returned an empty or non-PNG artifact", agentsdk.ErrorInternal, nil)
+	}
+	decoded, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil || format != "png" || decoded.Bounds().Dx() <= 0 || decoded.Bounds().Dy() <= 0 {
+		return agentsdk.NewAgentError("image service returned an invalid PNG artifact", agentsdk.ErrorInternal, nil)
+	}
+	return nil
+}
+
+func writeServiceImage(data []byte, output string, transparent bool) error {
+	if err := os.MkdirAll(filepath.Dir(output), 0o700); err != nil {
+		return fmt.Errorf("creating image output directory: %w", err)
+	}
+	if err := rejectSymlinkComponents(filepath.Dir(output)); err != nil {
 		return err
 	}
-	ext := strings.ToLower(filepath.Ext(outputPath))
-	if ext == ".jpg" || ext == ".jpeg" {
+	if details, err := os.Lstat(output); err == nil {
+		statData, ok := details.Sys().(*syscall.Stat_t)
+		if !details.Mode().IsRegular() || !ok || statData.Uid != uint32(os.Geteuid()) {
+			return fmt.Errorf("image output target is unsafe: %s", output)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspecting image output target: %w", err)
+	}
+	directory, err := openImageOperationDirectory(filepath.Dir(output))
+	if err != nil {
+		return fmt.Errorf("opening image output directory: %w", err)
+	}
+	defer directory.Close()
+	temporaryName := "." + filepath.Base(output) + "." + uuid.NewString()
+	descriptor, err := unix.Openat(int(directory.Fd()), temporaryName, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("creating image output temporary file: %w", err)
+	}
+	temporary := os.NewFile(uintptr(descriptor), temporaryName)
+	defer func() { _ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0) }()
+	extension := strings.ToLower(filepath.Ext(output))
+	if extension == ".jpg" || extension == ".jpeg" {
 		if transparent {
+			_ = temporary.Close()
 			return agentsdk.NewAgentError("transparent image output must be PNG, not JPEG", agentsdk.ErrorInvalidRequest, nil)
 		}
-		img, _, err := image.Decode(bytes.NewReader(data))
-		if err != nil {
-			return fmt.Errorf("decoding service PNG: %w", err)
-		}
-		out := image.NewRGBA(img.Bounds())
-		draw.Draw(out, out.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
-		draw.Draw(out, out.Bounds(), img, img.Bounds().Min, draw.Over)
-		file, err := os.Create(outputPath)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = file.Close() }()
-		return jpeg.Encode(file, out, &jpeg.Options{Quality: 92})
-	}
-	return os.WriteFile(outputPath, data, 0o644)
-}
-
-// findCodexImages returns generated codex images sorted newest-first, RESTRICTED
-// to those modified at/after `since` (so only images produced by the current
-// call qualify — never a stale one from a prior generation). When threadID is
-// set, it scans that session's folder; otherwise it falls back to every session
-// folder, but the `since` gate still guarantees freshness.
-func findCodexImages(threadID string, since time.Time) []string {
-	root := codexImageDir()
-	dirs := []string{}
-	if threadID != "" {
-		dirs = append(dirs, filepath.Join(root, threadID))
+		err = writeJpegTo(data, temporary)
 	} else {
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			return nil
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				dirs = append(dirs, filepath.Join(root, e.Name()))
-			}
-		}
+		_, err = temporary.Write(data)
 	}
-	type fileInfo struct {
-		path    string
-		modTime time.Time
-	}
-	var files []fileInfo
-	for _, d := range dirs {
-		entries, err := os.ReadDir(d)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			name := e.Name()
-			if !strings.HasPrefix(name, "ig_") || !strings.HasSuffix(name, ".png") {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			// Freshness gate: drop any image written before this call started.
-			if info.ModTime().Before(since) {
-				continue
-			}
-			files = append(files, fileInfo{path: filepath.Join(d, name), modTime: info.ModTime()})
-		}
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].modTime.After(files[j].modTime) })
-	out := make([]string, 0, len(files))
-	for _, f := range files {
-		out = append(out, f.path)
-	}
-	return out
-}
-
-func copyFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	data, err := os.ReadFile(src)
 	if err != nil {
+		_ = temporary.Close()
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("syncing image output temporary file: %w", err)
+	}
+	if err := validateImageOpenFile(temporary, extension); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("closing image output temporary file: %w", err)
+	}
+	if err := unix.Renameat(int(directory.Fd()), temporaryName, int(directory.Fd()), filepath.Base(output)); err != nil {
+		return fmt.Errorf("publishing image output: %w", err)
+	}
+	return directory.Sync()
 }
 
-func tail(s string, n int) string {
-	if len(s) <= n {
-		return s
+func writeJpegTo(data []byte, output io.Writer) error {
+	decoded, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("decoding image service PNG: %w", err)
 	}
-	return s[len(s)-n:]
+	background := image.NewRGBA(decoded.Bounds())
+	draw.Draw(background, background.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+	draw.Draw(background, background.Bounds(), decoded, decoded.Bounds().Min, draw.Over)
+	return jpeg.Encode(output, background, &jpeg.Options{Quality: 92})
 }
 
-// codexModel returns the configured codex model, defaulting to gpt-5.5.
-func codexModel(cfg *agentsdk.Config) string {
-	if cfg != nil && cfg.Image.CodexModel != "" {
-		return cfg.Image.CodexModel
+func validateImageOpenFile(file *os.File, extension string) error {
+	details, err := file.Stat()
+	if err != nil || !details.Mode().IsRegular() || details.Mode().Perm() != 0o600 || details.Size() <= 0 || details.Size() > maxImageBytes {
+		return fmt.Errorf("generated image temporary file is unsafe")
 	}
-	return "gpt-5.5"
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewinding generated image temporary file: %w", err)
+	}
+	decoded, format, err := image.Decode(file)
+	expected := "png"
+	if extension == ".jpg" || extension == ".jpeg" {
+		expected = "jpeg"
+	}
+	if err != nil || format != expected || decoded.Bounds().Dx() <= 0 || decoded.Bounds().Dy() <= 0 {
+		return fmt.Errorf("generated image temporary file is invalid")
+	}
+	return nil
 }

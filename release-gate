@@ -1,0 +1,173 @@
+#!/bin/sh
+set -eu
+
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+work_root=$(mktemp -d "/tmp/daz-agent-sdk-release.XXXXXX")
+python_bin="$project_root/.venv/bin/python"
+remote_host="darrenoakey@10.0.0.46"
+remote_root=""
+
+cleanup() {
+    if [ -n "$remote_root" ]; then
+        case "$remote_root" in
+            /tmp/daz-agent-sdk-go-canary.*)
+                ssh -o BatchMode=yes -o ConnectTimeout=10 "$remote_host" \
+                    "rm -rf -- $remote_root" >/dev/null 2>&1 || true
+                ;;
+        esac
+    fi
+    rm -rf -- "$work_root"
+}
+trap cleanup EXIT HUP INT TERM
+
+run_phase() {
+    phase_name=$1
+    shift
+    log_path="$work_root/$phase_name.log"
+    printf '%s\n' "$phase_name"
+    if "$@" >"$log_path" 2>&1; then
+        return 0
+    else
+        phase_status=$?
+        sed -n '1,240p' "$log_path"
+        return "$phase_status"
+    fi
+}
+
+validate_pytest_xml() {
+    xml_path=$1
+    "$python_bin" - "$xml_path" <<'PYTEST_XML_VALIDATOR'
+import sys
+import xml.etree.ElementTree as ET
+
+
+def local_name(tag):
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def count_attribute(element, name):
+    value = element.attrib.get(name, "0")
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise SystemExit(f"invalid pytest JUnit XML {name} count {value!r}") from error
+    if count < 0:
+        raise SystemExit(f"invalid pytest JUnit XML {name} count {count}")
+    return count
+
+
+xml_path = sys.argv[1]
+root = ET.parse(xml_path).getroot()
+suites = [element for element in root.iter() if local_name(element.tag) == "testsuite"]
+if not suites:
+    raise SystemExit("pytest JUnit XML contains no testsuite")
+
+containers = [
+    element for element in root.iter() if local_name(element.tag) in {"testsuite", "testsuites"}
+]
+for suite in containers:
+    for outcome in ("errors", "failures", "skipped"):
+        count = count_attribute(suite, outcome)
+        if count:
+            raise SystemExit(f"pytest JUnit XML reports {count} {outcome}")
+    for outcome in ("xfail", "xfails", "xfailed", "xpass", "xpasses", "xpassed"):
+        if outcome in suite.attrib and count_attribute(suite, outcome):
+            raise SystemExit(f"pytest JUnit XML reports {suite.attrib[outcome]} {outcome}")
+
+test_cases = [element for element in root.iter() if local_name(element.tag) == "testcase"]
+for test_case in test_cases:
+    for child in test_case:
+        outcome = local_name(child.tag)
+        if outcome in {
+            "error", "failure", "skipped", "xfail", "xfails", "xfailed", "xpass", "xpasses", "xpassed"
+        }:
+            raise SystemExit(f"pytest JUnit XML testcase reports {outcome}")
+    represented_outcome = " ".join(
+        test_case.attrib.get(name, "").lower() for name in ("status", "result", "outcome")
+    )
+    if any(outcome in represented_outcome for outcome in ("xfail", "xpass")):
+        raise SystemExit("pytest JUnit XML testcase reports xfail/xpass")
+
+for element in root.iter():
+    if local_name(element.tag) == "property":
+        represented_outcome = " ".join(value.lower() for value in element.attrib.values())
+        if any(outcome in represented_outcome for outcome in ("xfail", "xpass")):
+            raise SystemExit("pytest JUnit XML property reports xfail/xpass")
+
+if test_cases:
+    test_count = len(test_cases)
+else:
+    if local_name(root.tag) == "testsuite":
+        top_suites = [root]
+    else:
+        top_suites = [element for element in root if local_name(element.tag) == "testsuite"]
+    test_count = sum(count_attribute(suite, "tests") for suite in top_suites)
+
+if test_count == 0:
+    raise SystemExit("pytest JUnit XML reports zero tests")
+print(f"pytest JUnit XML passed: tests={test_count} errors=0 failures=0 skipped=0")
+PYTEST_XML_VALIDATOR
+}
+
+if [ ! -x "$python_bin" ]; then
+    printf '%s\n' "release gate requires the repository venv at $python_bin" >&2
+    exit 1
+fi
+
+cd "$project_root"
+run_phase python-dependencies "$python_bin" -m pip check
+run_phase python-lint "$python_bin" -m ruff check src
+run_phase python-types "$python_bin" -m pyright src/daz_agent_sdk
+run_phase python-tests "$python_bin" -m pytest -q -W error -rA --junitxml "$work_root/python-tests.xml" \
+    -m "not real_igs" src
+run_phase python-tests-outcomes validate_pytest_xml "$work_root/python-tests.xml"
+
+if rg -n 'Capability\.IMAGE|async def (generate_)?image|def (generate_)?image' \
+    src/daz_agent_sdk/providers >"$work_root/python-image-route-scan.log" 2>&1; then
+    sed -n '1,240p' "$work_root/python-image-route-scan.log"
+    printf '%s\n' "python provider exposes a callable still-image route" >&2
+    exit 1
+fi
+if rg -n 'CapabilityImage|func .*Image' go/provider >"$work_root/go-image-route-scan.log" 2>&1; then
+    sed -n '1,240p' "$work_root/go-image-route-scan.log"
+    printf '%s\n' "go provider exposes a callable still-image route" >&2
+    exit 1
+fi
+printf '%s\n' image-route-scan
+
+go_cache="$work_root/go-build"
+mkdir -p "$go_cache"
+cd "$project_root/go"
+run_phase go-format sh -c 'files=$(gofmt -l .); test -z "$files"'
+run_phase go-vet env GOCACHE="$go_cache" go vet ./...
+run_phase go-tests env GOCACHE="$go_cache" go test -json -p 1 -count=1 ./...
+if rg -n '"Action":"skip"' "$work_root/go-tests.log"; then
+    printf '%s\n' "go release tests reported an unexpected skip" >&2
+    exit 1
+fi
+run_phase go-build env GOCACHE="$go_cache" go build -o "$work_root/agent-sdk" ./cmd/agent-sdk
+
+cd "$project_root"
+run_phase real-python-igs-canary "$python_bin" -m pytest -q -W error -rA \
+    --junitxml "$work_root/real-python-igs-canary.xml" -m real_igs \
+    src/daz_agent_sdk/capabilities/image_test.py::test_generate_real_image
+run_phase real-python-igs-canary-outcomes validate_pytest_xml "$work_root/real-python-igs-canary.xml"
+
+run_phase remote-temp ssh -o BatchMode=yes -o ConnectTimeout=10 "$remote_host" \
+    mktemp -d /tmp/daz-agent-sdk-go-canary.XXXXXX
+remote_root=$(sed -n '1p' "$work_root/remote-temp.log")
+case "$remote_root" in
+    /tmp/daz-agent-sdk-go-canary.*) ;;
+    *)
+        printf '%s\n' "Mac mini returned an unsafe canary temporary path: $remote_root" >&2
+        exit 1
+        ;;
+esac
+run_phase stage-go-source tar -cf "$work_root/go-source.tar" go
+run_phase copy-go-source scp -q -o BatchMode=yes -o ConnectTimeout=10 \
+    "$work_root/go-source.tar" "$remote_host:$remote_root/go-source.tar"
+run_phase extract-go-source ssh -o BatchMode=yes -o ConnectTimeout=10 "$remote_host" \
+    "tar -xf $remote_root/go-source.tar -C $remote_root"
+run_phase real-go-igs-canary ssh -o BatchMode=yes -o ConnectTimeout=10 "$remote_host" \
+    "cd $remote_root/go && go test -tags=live_igs -count=1 -run '^TestGenerateImageLiveCanonical$' ./capability"
+printf '%s\n' "release gate passed"

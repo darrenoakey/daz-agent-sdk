@@ -25,8 +25,8 @@ class TierConfig:
 
 
 # ##################################################################
-# image tier config
-# step count for one image quality tier
+# legacy image tier config
+# retained only so old config files still parse; the service ignores it
 @dataclass
 class ImageTierConfig:
     steps: int = 4
@@ -34,31 +34,14 @@ class ImageTierConfig:
 
 # ##################################################################
 # image config
-# model selection and per-tier step counts for image generation
+# legacy image backend fields retained for compatibility and never dispatched
 @dataclass
 class ImageConfig:
-    model: str = "z-image-turbo"
-    # codex_model is the model passed to `codex exec` for native image generation.
-    # the default suits a Codex-account login; a ChatGPT-account login must override
-    # this (e.g. "gpt-5.5") since codex-specific models are rejected on that auth.
-    codex_model: str = "gpt-5.5"
+    model: str = ""
+    codex_model: str = ""
     tiers: dict[str, ImageTierConfig] = field(default_factory=dict)
     fallback: list[str] = field(default_factory=list)
-    transparent_post_process: str = "birefnet"
-
-    # ##################################################################
-    # post init
-    # fill default tier step counts if not provided
-    def __post_init__(self) -> None:
-        defaults = {
-            "very_high": ImageTierConfig(steps=8),
-            "high": ImageTierConfig(steps=3),
-            "medium": ImageTierConfig(steps=3),
-            "low": ImageTierConfig(steps=2),
-        }
-        for tier_key, default in defaults.items():
-            if tier_key not in self.tiers:
-                self.tiers[tier_key] = default
+    transparent_post_process: str = ""
 
 
 # ##################################################################
@@ -85,7 +68,9 @@ class TtsConfig:
     def __post_init__(self) -> None:
         if not self.voices:
             self.voices = {
-                "gary": TtsVoiceConfig(provider="local", voice_id="gary", description="British newsreader"),
+                "gary": TtsVoiceConfig(
+                    provider="local", voice_id="gary", description="British newsreader"
+                ),
                 "aiden": TtsVoiceConfig(provider="local", voice_id="aiden"),
             }
 
@@ -127,8 +112,12 @@ class FallbackConversationConfig:
 # top-level fallback settings for single-shot and conversation modes
 @dataclass
 class FallbackConfig:
-    single_shot: FallbackSingleShotConfig = field(default_factory=FallbackSingleShotConfig)
-    conversation: FallbackConversationConfig = field(default_factory=FallbackConversationConfig)
+    single_shot: FallbackSingleShotConfig = field(
+        default_factory=FallbackSingleShotConfig
+    )
+    conversation: FallbackConversationConfig = field(
+        default_factory=FallbackConversationConfig
+    )
 
 
 # ##################################################################
@@ -151,17 +140,17 @@ class Config:
         defaults: dict[str, list[str]] = {
             "very_high": [
                 "claude:claude-opus-4-6",
-                "codex:gpt-5.5",
+                "codex:gpt-5.6-sol",
                 "gemini:gemini-2.5-pro",
             ],
             "high": [
                 "claude:claude-opus-4-6",
-                "codex:gpt-5.5",
+                "codex:gpt-5.6-sol",
                 "gemini:gemini-2.5-pro",
             ],
             "medium": [
                 "claude:claude-sonnet-4-6",
-                "codex:gpt-4.1",
+                "codex:gpt-5.6-sol",
                 "gemini:gemini-2.5-flash",
             ],
             "low": [
@@ -204,11 +193,13 @@ def _build_image_config(raw: dict[str, Any]) -> ImageConfig:
 
     fallback = raw.get("fallback") or []
     transparent = raw.get("transparent") or {}
-    post_process = transparent.get("post_process", "birefnet") if isinstance(transparent, dict) else "birefnet"
+    post_process = (
+        transparent.get("post_process", "") if isinstance(transparent, dict) else ""
+    )
 
     return ImageConfig(
-        model=raw.get("model", "z-image-turbo"),
-        codex_model=raw.get("codex_model", "gpt-5.5"),
+        model=raw.get("model", ""),
+        codex_model=raw.get("codex_model", ""),
         tiers=tiers,
         fallback=list(fallback),
         transparent_post_process=post_process,
@@ -243,14 +234,24 @@ def _build_fallback_config(raw: dict[str, Any]) -> FallbackConfig:
     conv_raw = raw.get("conversation") or {}
 
     single_shot = FallbackSingleShotConfig(
-        strategy=ss_raw.get("strategy", "immediate_cascade") if isinstance(ss_raw, dict) else "immediate_cascade",
+        strategy=ss_raw.get("strategy", "immediate_cascade")
+        if isinstance(ss_raw, dict)
+        else "immediate_cascade",
         max_retries=ss_raw.get("max_retries", 3) if isinstance(ss_raw, dict) else 3,
-        retry_base_seconds=ss_raw.get("retry_base_seconds", 2.0) if isinstance(ss_raw, dict) else 2.0,
+        retry_base_seconds=ss_raw.get("retry_base_seconds", 2.0)
+        if isinstance(ss_raw, dict)
+        else 2.0,
     )
     conversation = FallbackConversationConfig(
-        strategy=conv_raw.get("strategy", "backoff_then_cascade") if isinstance(conv_raw, dict) else "backoff_then_cascade",
-        max_backoff_seconds=conv_raw.get("max_backoff_seconds", 60) if isinstance(conv_raw, dict) else 60,
-        summarise_with=conv_raw.get("summarise_with", "free_thinking") if isinstance(conv_raw, dict) else "free_thinking",
+        strategy=conv_raw.get("strategy", "backoff_then_cascade")
+        if isinstance(conv_raw, dict)
+        else "backoff_then_cascade",
+        max_backoff_seconds=conv_raw.get("max_backoff_seconds", 60)
+        if isinstance(conv_raw, dict)
+        else 60,
+        summarise_with=conv_raw.get("summarise_with", "free_thinking")
+        if isinstance(conv_raw, dict)
+        else "free_thinking",
     )
     return FallbackConfig(single_shot=single_shot, conversation=conversation)
 
@@ -269,11 +270,15 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
     providers: dict[str, dict[str, Any]] = {}
     raw_providers = raw.get("providers") or {}
     for provider_key, provider_val in raw_providers.items():
-        providers[provider_key] = dict(provider_val) if isinstance(provider_val, dict) else {}
+        providers[provider_key] = (
+            dict(provider_val) if isinstance(provider_val, dict) else {}
+        )
 
     # image
     raw_image = raw.get("image") or {}
-    image = _build_image_config(raw_image) if isinstance(raw_image, dict) else ImageConfig()
+    image = (
+        _build_image_config(raw_image) if isinstance(raw_image, dict) else ImageConfig()
+    )
 
     # tts
     raw_tts = raw.get("tts") or {}
@@ -282,14 +287,24 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
     # logging
     raw_logging = raw.get("logging") or {}
     logging_cfg = LoggingConfig(
-        directory=raw_logging.get("directory", "~/.daz-agent-sdk/logs") if isinstance(raw_logging, dict) else "~/.daz-agent-sdk/logs",
-        level=raw_logging.get("level", "info") if isinstance(raw_logging, dict) else "info",
-        retention_days=raw_logging.get("retention_days", 30) if isinstance(raw_logging, dict) else 30,
+        directory=raw_logging.get("directory", "~/.daz-agent-sdk/logs")
+        if isinstance(raw_logging, dict)
+        else "~/.daz-agent-sdk/logs",
+        level=raw_logging.get("level", "info")
+        if isinstance(raw_logging, dict)
+        else "info",
+        retention_days=raw_logging.get("retention_days", 30)
+        if isinstance(raw_logging, dict)
+        else 30,
     )
 
     # fallback
     raw_fallback = raw.get("fallback") or {}
-    fallback = _build_fallback_config(raw_fallback) if isinstance(raw_fallback, dict) else FallbackConfig()
+    fallback = (
+        _build_fallback_config(raw_fallback)
+        if isinstance(raw_fallback, dict)
+        else FallbackConfig()
+    )
 
     return Config(
         tiers=tiers,
@@ -305,7 +320,9 @@ def _parse_raw(raw: dict[str, Any]) -> Config:
 # load config
 # reads ~/.daz-agent-sdk/config.yaml if it exists, otherwise uses defaults
 # result is cached at module level for the lifetime of the process
-def load_config(config_path: Path | None = None, *, force_reload: bool = False) -> Config:
+def load_config(
+    config_path: Path | None = None, *, force_reload: bool = False
+) -> Config:
     global _config_cache
     if _config_cache is not None and not force_reload and config_path is None:
         return _config_cache
@@ -348,13 +365,12 @@ def get_tier_chain(tier: Tier, config: Config | None = None) -> list[str]:
 
 # ##################################################################
 # get image steps
-# returns the inference step count for a given image generation tier
-# only high/medium/low are meaningful for image generation
+# returns a parsed legacy value for compatibility; image dispatch ignores it
 def get_image_steps(tier: Tier, config: Config | None = None) -> int:
     cfg = config or load_config()
     tier_cfg = cfg.image.tiers.get(tier.value)
     if tier_cfg is None:
-        return cfg.image.tiers.get("medium", ImageTierConfig(steps=4)).steps
+        return cfg.image.tiers.get("medium", ImageTierConfig(steps=0)).steps
     return tier_cfg.steps
 
 
