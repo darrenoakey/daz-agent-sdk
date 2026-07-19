@@ -12,10 +12,6 @@ import (
 type Agent struct {
 	config *Config
 
-	// ImageFn is the function called by Image(). Set by capability package
-	// registration or by the caller directly.
-	ImageFn func(ctx context.Context, prompt string, opts ImageCallOpts) (*ImageResult, error)
-
 	// SpeakFn is the function called by Speak(). Set by capability package
 	// registration or by the caller directly.
 	SpeakFn func(ctx context.Context, text string, opts SpeakCallOpts) (*AudioResult, error)
@@ -23,10 +19,6 @@ type Agent struct {
 	// TranscribeFn is the function called by Transcribe(). Set by capability
 	// package registration or by the caller directly.
 	TranscribeFn func(ctx context.Context, audioPath string, opts TranscribeCallOpts) (string, error)
-
-	// RemoveBackgroundFn is the function called by RemoveBackground().
-	// Set by capability package registration or by the caller directly.
-	RemoveBackgroundFn func(ctx context.Context, imagePath string, opts RemoveBackgroundCallOpts) (string, error)
 
 	// EmbedFn is the function called by Embed(). Set by the CLI/caller to
 	// delegate to the arbiter provider's Embed method, avoiding a circular
@@ -44,28 +36,14 @@ type EmbedCallOpts struct {
 	Config    *Config
 }
 
-// ImageCallOpts holds parameters for the image generation function.
-type ImageCallOpts struct {
-	Width          int
-	Height         int
-	Output         string
-	Provider       string
-	Model          string
-	Image          string   // input image path for a service-backed edit
-	Images         []string // multiple input image paths for a service-backed edit
-	Steps          int      // legacy field; non-zero values fail closed
-	Tier           Tier
-	Transparent    bool
-	Timeout        time.Duration
-	Config         *Config
-	Logger         *ConversationLogger
-	IdempotencyKey string
-}
+const imageDeadlineError = "image deadlines are actively disabled; durable Mac mini Codex image operations wait indefinitely"
 
-// RemoveBackgroundCallOpts holds parameters for background removal.
-type RemoveBackgroundCallOpts struct {
-	Timeout time.Duration
-	Config  *Config
+// ValidateImageTimeout rejects obsolete image deadlines so durable operations cannot be abandoned.
+func ValidateImageTimeout(timeout time.Duration) error {
+	if timeout != 0 {
+		return NewAgentError(imageDeadlineError, ErrorInvalidRequest, nil)
+	}
+	return nil
 }
 
 // SpeakCallOpts holds parameters for the speech synthesis function.
@@ -256,7 +234,8 @@ func (a *Agent) Conversation(name string, opts ...ConversationOption) *Conversat
 	return NewConversation(name, opts...)
 }
 
-// ImageOpts holds optional parameters for Agent.Image.
+// ImageOpts is retained for source compatibility with Agent.Image callers.
+// Generate images through capability.GenerateImage instead.
 type ImageOpts struct {
 	Width          int
 	Height         int
@@ -272,34 +251,13 @@ type ImageOpts struct {
 	IdempotencyKey string
 }
 
-// Image generates an image from a text prompt. The ImageFn must be set
-// (typically by importing the capability package and calling its
-// registration function, or by the CLI).
+// Image fails closed because the root package cannot import the canonical
+// capability without creating an import cycle. Use capability.GenerateImage.
 func (a *Agent) Image(ctx context.Context, prompt string, opts ImageOpts) (*ImageResult, error) {
-	if err := a.config.ValidateImageConfig(); err != nil {
-		return nil, err
-	}
-	if a.ImageFn == nil {
-		return nil, NewAgentError(
-			"image capability not registered; import capability package or set Agent.ImageFn",
-			ErrorNotAvailable, nil,
-		)
-	}
-	return a.ImageFn(ctx, prompt, ImageCallOpts{
-		Width:          opts.Width,
-		Height:         opts.Height,
-		Output:         opts.Output,
-		Provider:       opts.Provider,
-		Model:          opts.Model,
-		Image:          opts.Image,
-		Images:         opts.Images,
-		Steps:          opts.Steps,
-		Tier:           opts.Tier,
-		Transparent:    opts.Transparent,
-		Timeout:        opts.Timeout,
-		Config:         a.config,
-		IdempotencyKey: opts.IdempotencyKey,
-	})
+	return nil, NewAgentError(
+		"Agent.Image is actively disabled because it cannot accept image adapters; call capability.GenerateImage for the hard-pinned durable Mac mini Codex image service",
+		ErrorInvalidRequest, nil,
+	)
 }
 
 // RemoveBackgroundOpts holds optional parameters for Agent.RemoveBackground.

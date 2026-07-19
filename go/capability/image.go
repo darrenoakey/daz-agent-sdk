@@ -17,8 +17,13 @@ import (
 
 const legacyImageProviderError = "image provider %q is actively disabled; use the Mac mini Codex image service"
 
-// ImageOpts holds optional parameters for GenerateImage. Provider, Model, and
-// Steps remain for source compatibility, but legacy backend pins fail closed.
+func durableImageContext(parent context.Context) context.Context {
+	return context.WithoutCancel(parent)
+}
+
+// ImageOpts holds optional parameters for GenerateImage. Provider, Model,
+// Steps, and Timeout remain for source compatibility, but disabled selectors
+// fail closed before service I/O.
 type ImageOpts struct {
 	Provider       string
 	Model          string
@@ -98,6 +103,9 @@ func validateImageRoute(options ImageOpts) error {
 			agentsdk.ErrorInvalidRequest, nil,
 		)
 	}
+	if err := agentsdk.ValidateImageTimeout(options.Timeout); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -121,12 +129,7 @@ func GenerateImage(parent context.Context, prompt string, options ImageOpts) (*a
 	if err != nil {
 		return nil, err
 	}
-	operationContext := parent
-	cancel := func() {}
-	if options.Timeout > 0 {
-		operationContext, cancel = context.WithTimeout(parent, options.Timeout)
-	}
-	defer cancel()
+	operationContext := durableImageContext(parent)
 	result, err := completeImageOperation(operationContext, prompt, options, body)
 	if err == nil && options.Logger != nil {
 		options.Logger.LogEvent("image_complete", map[string]any{

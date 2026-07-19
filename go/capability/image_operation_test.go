@@ -70,21 +70,6 @@ func TestExplicitKeyCreatesDeliberateRegenerationIdentity(t *testing.T) {
 	}
 }
 
-func TestPendingAmbiguousSubmissionPreservesRecoverableIdentity(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "operation.json")
-	state := imageOperationState{
-		OperationId: "durable-operation", IdempotencyKey: "durable-key",
-		OutputPath: filepath.Join(t.TempDir(), "result.png"),
-	}
-	result := pendingImageOperationResult(statePath, state)
-	if result.Ready || result.Status != "submitting" || result.JobID != "" || result.IdempotencyKey != state.IdempotencyKey {
-		t.Fatalf("pending ambiguous result = %+v", result)
-	}
-	if result.Provenance["operation_id"] != state.OperationId || result.Provenance["operation_state"] != statePath || result.Provenance["recoverable"] != true {
-		t.Fatalf("pending ambiguous provenance = %+v", result.Provenance)
-	}
-}
-
 func TestImageOperationRejectsSymlinkAndUntrustedExistingState(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.Chmod(directory, 0o700); err != nil {

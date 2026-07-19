@@ -111,8 +111,9 @@ func WaitImageSubmission(parent context.Context, requestBody []byte, idempotency
 	if err := validateOptionalImageConfig(configurations); err != nil {
 		return nil, err
 	}
+	operationContext := durableImageContext(parent)
 	for {
-		submission, err := RecoverImageSubmission(parent, requestBody, idempotencyKey, configurations...)
+		submission, err := RecoverImageSubmission(operationContext, requestBody, idempotencyKey, configurations...)
 		if err == nil {
 			return submission, nil
 		}
@@ -120,11 +121,7 @@ func WaitImageSubmission(parent context.Context, requestBody []byte, idempotency
 		if !errors.As(err, &agentError) || agentError.Kind != agentsdk.ErrorNotAvailable {
 			return nil, err
 		}
-		select {
-		case <-parent.Done():
-			return nil, parent.Err()
-		case <-time.After(imagePollInterval):
-		}
+		<-time.After(imagePollInterval)
 	}
 }
 

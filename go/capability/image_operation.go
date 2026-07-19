@@ -442,9 +442,6 @@ func completeImageOperation(parent context.Context, prompt string, options Image
 	if state.JobId == "" {
 		submission, submitError := WaitImageSubmission(parent, []byte(state.RequestBody), state.IdempotencyKey, options.Config)
 		if submitError != nil {
-			if options.Timeout > 0 && parent.Err() != nil {
-				return pendingImageOperationResult(statePath, state), nil
-			}
 			return nil, submitError
 		}
 		state.JobId = submission.JobID
@@ -463,20 +460,6 @@ func completeImageOperation(parent context.Context, prompt string, options Image
 		result.Replayed = replayed
 	}
 	return result, err
-}
-
-func pendingImageOperationResult(statePath string, state imageOperationState) *agentsdk.ImageResult {
-	status := "submitting"
-	if state.JobId != "" {
-		status = "accepted"
-	}
-	return &agentsdk.ImageResult{
-		Path: state.OutputPath, ModelUsed: codexModelInfo, ConversationID: uuid.New(), JobID: state.JobId,
-		Status: status, Provider: "codex", IdempotencyKey: state.IdempotencyKey,
-		Provenance: map[string]any{
-			"operation_id": state.OperationId, "operation_state": statePath, "recoverable": true,
-		},
-	}
 }
 
 // ResumeImageOperation resumes the immutable request recorded at statePath.
@@ -500,8 +483,9 @@ func ResumeImageOperation(parent context.Context, statePath string, configuratio
 	if state.Version != imageOperationStateVersion {
 		return nil, agentsdk.NewAgentError("unsupported image operation state version", agentsdk.ErrorInvalidRequest, nil)
 	}
+	operationContext := durableImageContext(parent)
 	if state.JobId == "" {
-		submission, submitError := WaitImageSubmission(parent, []byte(state.RequestBody), state.IdempotencyKey)
+		submission, submitError := WaitImageSubmission(operationContext, []byte(state.RequestBody), state.IdempotencyKey)
 		if submitError != nil {
 			return nil, submitError
 		}
@@ -510,7 +494,7 @@ func ResumeImageOperation(parent context.Context, statePath string, configuratio
 			return nil, err
 		}
 	}
-	result, err := WaitImageJob(parent, state.JobId, ImageJobOpts{Output: state.OutputPath, Transparent: state.Transparent})
+	result, err := WaitImageJob(operationContext, state.JobId, ImageJobOpts{Output: state.OutputPath, Transparent: state.Transparent})
 	if result != nil {
 		result.IdempotencyKey = state.IdempotencyKey
 	}

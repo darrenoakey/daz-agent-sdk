@@ -182,19 +182,6 @@ def test_codex_encodes_input_image_for_service(tmp_path: Path):
     ]
 
 
-def test_pending_async_result_never_claims_preexisting_output_is_ready(tmp_path: Path):
-    output = tmp_path / "existing.png"
-    output.write_bytes(b"not a completed job artifact")
-    status = image_module._status_from_service(
-        {"id": "durable-job", "status": "running"}, "durable-job"
-    )
-    result = image_module._pending_image_result(status, output)
-    assert result.ready is False
-    assert result.status == "running"
-    assert result.path == output
-    assert output.exists()
-
-
 def test_terminal_job_error_preserves_identity_and_never_recovers():
     status = image_module._status_from_service(
         {"id": "terminal-job", "status": "failed", "error": "service failure"},
@@ -310,27 +297,6 @@ def test_state_parent_symlink_is_rejected_before_creating_beneath_it(
     assert not (owned / "missing").exists()
 
 
-def test_pending_ambiguous_submission_preserves_recoverable_identity(tmp_path: Path):
-    state_path = tmp_path / "operation.json"
-    _, state = image_module._prepare_operation(
-        b'{"prompt":"ambiguous","width":64,"height":64}',
-        tmp_path / "result.png",
-        False,
-        None,
-        state_path,
-    )
-    result = image_module._pending_operation_result(state_path, state)
-    assert result.ready is False
-    assert result.status == "submitting"
-    assert result.job_id == ""
-    assert result.idempotency_key == state["idempotency_key"]
-    assert result.provenance == {
-        "operation_id": state["operation_id"],
-        "operation_state": str(state_path),
-        "recoverable": True,
-    }
-
-
 def test_high_level_image_defaults_have_no_finite_completion_cutoff():
     from daz_agent_sdk.core import Agent
 
@@ -347,6 +313,34 @@ def test_high_level_image_defaults_have_no_finite_completion_cutoff():
         inspect.signature(Agent.resume_image_operation).parameters["timeout"].default
         is None
     )
+
+
+def test_public_image_timeouts_fail_before_service_or_filesystem_io(tmp_path: Path):
+    from daz_agent_sdk.core import Agent
+
+    output = tmp_path / "missing" / "output.png"
+    state = tmp_path / "missing-operation.json"
+
+    async def exercise() -> None:
+        calls = [
+            generate_image("deadline", width=64, height=64, output=output, timeout=1.0),
+            resume_image_job("durable-job", output, timeout=1.0),
+            resume_image_operation(state, timeout=1.0),
+            Agent().image("deadline", width=64, height=64, output=output, timeout=1.0),
+            Agent().resume_image_job("durable-job", output=output, timeout=1.0),
+            Agent().resume_image_operation(state, timeout=1.0),
+        ]
+        for call in calls:
+            with pytest.raises(
+                AgentError, match="deadlines are actively disabled"
+            ) as error:
+                await call
+            assert error.value.kind == ErrorKind.INVALID_REQUEST
+            assert "wait indefinitely" in str(error.value)
+
+    asyncio.run(exercise())
+    assert not output.parent.exists()
+    assert not state.exists()
 
 
 def test_default_api_operation_survives_process_boundary_before_acceptance(
@@ -612,7 +606,6 @@ def test_input_image_missing_raises():
                 width=512,
                 height=512,
                 image="/nonexistent/does-not-exist.png",
-                timeout=1.0,
             )
         )
     assert exc_info.value.kind == ErrorKind.INVALID_REQUEST

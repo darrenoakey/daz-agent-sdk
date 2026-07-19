@@ -66,7 +66,7 @@ The Go OpenAI provider uses `OPENAI_API_KEY` because it calls the API directly (
 - Image generation: `provider=None` / `provider="codex"` routes only to the always-on Mac mini image generation service at `http://10.0.0.46:8830`. The contract is `POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/image`; callers cannot override the origin.
 - The mac mini service is the shared image path for ltx2, `~/bin/generate_image`, and `~/publish`. It returns PNG bytes and handles source images through uploaded base64 `source_images`. JPEG callers are converted locally after the service returns PNG.
 - Image provider/model/step pins for Spark, Arbiter, Flux, Z-Image, Ollama, Gemini/Nano Banana, and direct OpenAI fail closed. Image config fallback entries are parsed only for backward compatibility and never dispatched.
-- `ImageResult.job_id`, `status`, and `ready` expose durable state. A local wait timeout returns `ready=False` without cancelling or replacing the server job.
+- `ImageResult.job_id`, `status`, and `ready` expose durable state. Image deadlines are actively disabled: durable operations wait indefinitely and never return a caller-induced pending result.
 - `get_image_job`, `resume_image_job`, and `download_image_job` recover existing IDs using GET-only IGS routes and retain provider/attempt provenance. Go exposes the equivalent `capability.GetImageJob`, `ResumeImageJob`, and `DownloadImageJob` APIs.
 - `./run deploy` bumps patch version, builds, uploads to PyPI via twine (keyring token), waits 30s, installs globally
 - Claude provider uses native `output_format` for structured output — SDK injects a `StructuredOutput` tool, data comes back in `ToolUseBlock(name='StructuredOutput', input={...})`. Falls back to parsing response text if native output unavailable
@@ -86,7 +86,7 @@ Full Go implementation in `go/` directory. See `go/README.md` for complete docum
 - **Build CLI**: `cd go/cmd/agent-sdk && go build -o agent-sdk .`
 - **Module**: `github.com/darrenoakey/daz-agent-sdk/go`
 - Image generation: durable Mac mini Codex `/jobs` client only, hard-pinned to `http://10.0.0.46:8830` with no origin override or provider fallback
-- Legacy `ImageOpts.Provider`, `Model`, and `Steps` values fail closed; timeout results retain durable job state
+- Legacy `ImageOpts.Provider`, `Model`, and `Steps` values fail closed; nonzero image timeouts fail before service I/O
 - Conversation.Say() accepts `WithSaySchema()` and `WithSayTier()` for structured output and per-call tier override
 - TTS/STT use same CLI subprocesses as Python (tts, whisper)
 - Provider interface in root package, implementations in `provider/` subpackage

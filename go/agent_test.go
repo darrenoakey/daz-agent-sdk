@@ -2,6 +2,8 @@ package dazagentsdk
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,13 +30,49 @@ func TestNewAgent_WithConfig(t *testing.T) {
 
 func TestAgentRemoveBackgroundFailsClosed(t *testing.T) {
 	agent := NewAgent(nil)
-	agent.RemoveBackgroundFn = func(context.Context, string, RemoveBackgroundCallOpts) (string, error) {
-		return "alternate-route", nil
-	}
+	adapterCalls := 0
+	installArbitraryAdapter(t, agent, "RemoveBackgroundFn", &adapterCalls)
 	result, err := agent.RemoveBackground(context.Background(), "image.png", RemoveBackgroundOpts{})
 	if result != "" || err == nil || !strings.Contains(err.Error(), "actively disabled") || !strings.Contains(err.Error(), "durable Mac mini Codex image service") {
 		t.Fatalf("remove background result=%q error=%v", result, err)
 	}
+	if adapterCalls != 0 {
+		t.Fatalf("arbitrary background-removal adapter executed %d times", adapterCalls)
+	}
+}
+
+func TestAgentImageCannotExecuteArbitraryAdapter(t *testing.T) {
+	agent := NewAgent(nil)
+	adapterCalls := 0
+	installArbitraryAdapter(t, agent, "ImageFn", &adapterCalls)
+	result, err := agent.Image(context.Background(), "route proof", ImageOpts{})
+	var agentError *AgentError
+	if result != nil || !errors.As(err, &agentError) || agentError.Kind != ErrorInvalidRequest {
+		t.Fatalf("disabled Agent.Image result=%+v error=%v", result, err)
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("arbitrary image adapter executed %d times", adapterCalls)
+	}
+	if !strings.Contains(err.Error(), "capability.GenerateImage") || !strings.Contains(err.Error(), "hard-pinned") {
+		t.Fatalf("Agent.Image guidance = %v", err)
+	}
+}
+
+func installArbitraryAdapter(t *testing.T, agent *Agent, fieldName string, calls *int) {
+	t.Helper()
+	field := reflect.ValueOf(agent).Elem().FieldByName(fieldName)
+	if !field.IsValid() {
+		return
+	}
+	function := reflect.MakeFunc(field.Type(), func(_ []reflect.Value) []reflect.Value {
+		*calls = *calls + 1
+		results := make([]reflect.Value, field.Type().NumOut())
+		for index := range results {
+			results[index] = reflect.Zero(field.Type().Out(index))
+		}
+		return results
+	})
+	field.Set(function)
 }
 
 func TestAgent_ConversationReturnsConversation(t *testing.T) {
@@ -60,7 +98,7 @@ func TestAgent_ModelsReturnsModels(t *testing.T) {
 	}
 
 	// With default config and no providers loaded, models come from tier
-	// chain resolution (placeholder ModelInfo objects)
+	// chain resolution (unresolved ModelInfo objects)
 	if len(models) == 0 {
 		t.Log("No models returned (expected when no providers registered)")
 	}

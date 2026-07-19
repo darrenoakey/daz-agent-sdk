@@ -107,31 +107,21 @@ func ResumeImageJob(parent context.Context, jobId string, options ImageJobOpts) 
 	if err := options.Config.ValidateImageConfig(); err != nil {
 		return nil, err
 	}
-	var deadline <-chan time.Time
-	if options.Timeout > 0 {
-		timer := time.NewTimer(options.Timeout)
-		defer timer.Stop()
-		deadline = timer.C
+	if err := agentsdk.ValidateImageTimeout(options.Timeout); err != nil {
+		return nil, err
 	}
-	last := &agentsdk.ImageJobStatus{JobID: jobId, Status: "unknown", Provider: "codex"}
+	operationContext := durableImageContext(parent)
 	for {
-		status, err := GetImageJob(parent, jobId)
+		status, err := GetImageJob(operationContext, jobId)
 		if err != nil {
 			if !isTransientImageError(err) {
 				return nil, err
 			}
-			select {
-			case <-deadline:
-				return pendingImageResult(options.Output, last), nil
-			case <-parent.Done():
-				return pendingImageResult(options.Output, last), nil
-			case <-time.After(imagePollInterval):
-				continue
-			}
+			<-time.After(imagePollInterval)
+			continue
 		}
-		last = status
 		if status.Status == "done" {
-			result, downloadError := DownloadImageJob(parent, jobId, options.Output, options.Transparent)
+			result, downloadError := DownloadImageJob(operationContext, jobId, options.Output, options.Transparent)
 			if downloadError == nil {
 				return result, nil
 			}
@@ -143,13 +133,7 @@ func ResumeImageJob(parent context.Context, jobId string, options ImageJobOpts) 
 			attempts := []map[string]any{{"job_id": jobId, "status": status.Status, "recoverable": false}}
 			return nil, agentsdk.NewAgentError(fmt.Sprintf("image service job %s ended with status %s: %s", jobId, status.Status, status.Error), agentsdk.ErrorInternal, attempts)
 		}
-		select {
-		case <-deadline:
-			return pendingImageResult(options.Output, status), nil
-		case <-parent.Done():
-			return pendingImageResult(options.Output, status), nil
-		case <-time.After(imagePollInterval):
-		}
+		<-time.After(imagePollInterval)
 	}
 }
 
@@ -165,11 +149,4 @@ func validateOptionalImageConfig(configurations []*agentsdk.Config) error {
 func isTransientImageError(err error) bool {
 	var agentError *agentsdk.AgentError
 	return errors.As(err, &agentError) && agentError.Kind == agentsdk.ErrorNotAvailable
-}
-
-func pendingImageResult(output string, status *agentsdk.ImageJobStatus) *agentsdk.ImageResult {
-	return &agentsdk.ImageResult{
-		Path: output, ModelUsed: codexModelInfo, ConversationID: uuid.New(), JobID: status.JobID,
-		Status: status.Status, Provider: status.Provider, Provenance: status.Provenance,
-	}
 }

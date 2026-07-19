@@ -3,10 +3,9 @@ package capability
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	agentsdk "github.com/darrenoakey/daz-agent-sdk/go"
 )
@@ -20,16 +19,14 @@ func TestGetImageJobRejectsInvalidIdBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestPendingImageResultDoesNotTrustPreexistingOutput(t *testing.T) {
-	output := filepath.Join(t.TempDir(), "existing.png")
-	if err := os.WriteFile(output, []byte("not a completed job artifact"), 0o600); err != nil {
-		t.Fatal(err)
+func TestResumeImageJobRejectsTimeoutBeforeNetwork(t *testing.T) {
+	result, err := ResumeImageJob(context.Background(), "durable-job", ImageJobOpts{Timeout: time.Second})
+	var agentError *agentsdk.AgentError
+	if result != nil || !errors.As(err, &agentError) || agentError.Kind != agentsdk.ErrorInvalidRequest {
+		t.Fatalf("finite timeout result=%+v error=%v", result, err)
 	}
-	result := pendingImageResult(output, &agentsdk.ImageJobStatus{
-		JobID: "durable-job", Status: "running", Provider: "codex",
-	})
-	if result.Ready || result.Status != "running" || result.Path != output {
-		t.Fatalf("pending result trusted preexisting output: %+v", result)
+	if !strings.Contains(err.Error(), "deadlines are actively disabled") {
+		t.Fatalf("finite timeout guidance = %v", err)
 	}
 }
 

@@ -182,7 +182,7 @@ result = await agent.image(
 )
 ```
 
-If a local wait expires, `ready` is `False` and `job_id`/`status` identify the durable server job; no replacement job is submitted.
+Image deadlines are actively disabled. The public generation and resume APIs wait indefinitely for the durable Mac mini Codex operation; passing a finite compatibility `timeout` raises `INVALID_REQUEST` before service I/O.
 
 Each logical submission uses one UUID `Idempotency-Key`. Transport retries reuse the exact encoded request and key, so an accepted response that is lost replays to the original job. Callers that persist their own recovery state can supply `idempotency_key=` or call `submit_image_job(..., idempotency_key=key)` directly. Structured `409` and `410` errors include the key and original job ID in `AgentError.attempts`.
 
@@ -191,7 +191,7 @@ Resume or inspect that exact job without submitting another request:
 ```python
 status = await agent.image_job_status(result.job_id)
 result = await agent.resume_image_job(
-    result.job_id, output="garden.png", timeout=600
+    result.job_id, output="garden.png"
 )
 # For an already-complete job:
 result = await agent.download_image_job(result.job_id, output="garden.png")

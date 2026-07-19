@@ -87,27 +87,6 @@ func printUsage() {
 func newAgent() *sdk.Agent {
 	agent := sdk.NewAgent(nil)
 
-	// Wire up capability functions to avoid circular imports in root package
-	agent.ImageFn = func(ctx context.Context, prompt string, opts sdk.ImageCallOpts) (*sdk.ImageResult, error) {
-		return capability.GenerateImage(ctx, prompt, capability.ImageOpts{
-			Width:          opts.Width,
-			Height:         opts.Height,
-			Output:         opts.Output,
-			Provider:       opts.Provider,
-			Model:          opts.Model,
-			Image:          opts.Image,
-			Images:         opts.Images,
-			Steps:          opts.Steps,
-			Tier:           opts.Tier,
-			Transparent:    opts.Transparent,
-			Timeout:        opts.Timeout,
-			Config:         opts.Config,
-			Logger:         opts.Logger,
-			ConversationID: uuid.New(),
-			IdempotencyKey: opts.IdempotencyKey,
-		})
-	}
-
 	agent.SpeakFn = func(ctx context.Context, text string, opts sdk.SpeakCallOpts) (*sdk.AudioResult, error) {
 		return capability.SynthesizeSpeech(ctx, text, capability.SpeakOpts{
 			Voice:          opts.Voice,
@@ -202,7 +181,6 @@ func runImage(args []string) int {
 	width := fs.Int("width", 512, "Image width in pixels")
 	height := fs.Int("height", 512, "Image height in pixels")
 	output := fs.String("output", "", "Output file path (default: temp file)")
-	provider := fs.String("provider", "", "Image provider (only codex is enabled)")
 	transparent := fs.Bool("transparent", false, "Remove background after generation")
 	statePath := fs.String("state", "", "Crash-safe image submission state file")
 	idempotencyKey := fs.String("idempotency-key", "", "Durable image submission key")
@@ -212,10 +190,6 @@ func runImage(args []string) int {
 	fs.Var(&images, "i", "Alias for --image.")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
-	}
-	if normalized := strings.ToLower(strings.TrimSpace(*provider)); normalized != "" && normalized != "codex" {
-		fmt.Fprintf(os.Stderr, "Error: image provider %q is actively disabled; use the Mac mini Codex image service\n", *provider)
 		return 1
 	}
 	configuration, err := sdk.LoadConfig()
@@ -230,7 +204,7 @@ func runImage(args []string) int {
 
 	if *prompt == "" && *recoverPath == "" {
 		fmt.Fprintln(os.Stderr, "Error: --prompt is required")
-		fmt.Fprintln(os.Stderr, "Usage: agent-sdk image --prompt \"...\" --width 512 --height 512 [--output path] [--image FILE ...] [--provider codex]")
+		fmt.Fprintln(os.Stderr, "Usage: agent-sdk image --prompt \"...\" --width 512 --height 512 [--output path] [--image FILE ...]")
 		return 1
 	}
 	ctx := context.Background()
@@ -252,7 +226,6 @@ func runImage(args []string) int {
 		Width:          *width,
 		Height:         *height,
 		Output:         *output,
-		Provider:       *provider,
 		Transparent:    *transparent,
 		StatePath:      *statePath,
 		IdempotencyKey: *idempotencyKey,

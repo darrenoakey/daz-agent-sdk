@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	agentsdk "github.com/darrenoakey/daz-agent-sdk/go"
 	"github.com/google/uuid"
@@ -63,6 +64,47 @@ func TestGenerateImageRejectsLegacyModelAndStepsPins(t *testing.T) {
 	}
 	if err := validateImageRoute(ImageOpts{Steps: 4}); err == nil {
 		t.Fatal("expected image step pin to fail closed")
+	}
+}
+
+func TestGenerateImageRejectsTimeoutBeforeFilesystemOrNetwork(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "missing", "output.png")
+	result, err := GenerateImage(context.Background(), "deadline proof", ImageOpts{
+		Width: 64, Height: 64, Output: output, Timeout: time.Second,
+	})
+	var agentError *agentsdk.AgentError
+	if result != nil || !errors.As(err, &agentError) || agentError.Kind != agentsdk.ErrorInvalidRequest {
+		t.Fatalf("finite timeout result=%+v error=%v", result, err)
+	}
+	if !strings.Contains(err.Error(), "deadlines are actively disabled") || !strings.Contains(err.Error(), "wait indefinitely") {
+		t.Fatalf("finite timeout guidance = %v", err)
+	}
+	if _, statError := os.Stat(filepath.Dir(output)); !errors.Is(statError, os.ErrNotExist) {
+		t.Fatalf("timeout validation touched output directory: %v", statError)
+	}
+}
+
+func TestDurableImageContextIgnoresCancellationAndDeadline(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), time.Hour)
+	cancel()
+	operationContext := durableImageContext(parent)
+	if operationContext.Err() != nil {
+		t.Fatalf("durable context retained cancellation: %v", operationContext.Err())
+	}
+	if _, hasDeadline := operationContext.Deadline(); hasDeadline {
+		t.Fatal("durable context retained caller deadline")
+	}
+	if context.Cause(operationContext) != nil {
+		t.Fatalf("durable context retained cancellation cause: %v", context.Cause(operationContext))
+	}
+	source, err := os.ReadFile("image.go")
+	if err != nil {
+		t.Fatalf("reading durable image boundary: %v", err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "operationContext := durableImageContext(parent)") ||
+		!strings.Contains(text, "completeImageOperation(operationContext, prompt, options, body)") {
+		t.Fatal("GenerateImage does not pass the durable context across the operation boundary")
 	}
 }
 

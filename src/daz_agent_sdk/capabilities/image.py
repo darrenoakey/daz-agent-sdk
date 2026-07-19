@@ -50,6 +50,10 @@ _OPERATION_STATE_VERSION = 2
 _OPERATION_NAMESPACE = "daz-agent-sdk:image-operation:"
 _MAX_STATE_BYTES = 1 << 20
 _MAX_IMAGE_BYTES = 128 << 20
+_IMAGE_DEADLINE_ERROR = (
+    "image deadlines are actively disabled; durable Mac mini Codex image "
+    "operations wait indefinitely"
+)
 
 
 def _validate_legacy_image_config(config: Config | None) -> None:
@@ -73,6 +77,11 @@ def _validate_legacy_image_config(config: Config | None) -> None:
             f"legacy image configuration is actively disabled: {fields}",
             kind=ErrorKind.INVALID_REQUEST,
         )
+
+
+def _validate_image_timeout(timeout: float | None) -> None:
+    if timeout is not None:
+        raise AgentError(_IMAGE_DEADLINE_ERROR, kind=ErrorKind.INVALID_REQUEST)
 
 
 def _operation_registry_root() -> Path:
@@ -993,59 +1002,12 @@ async def resume_image_job(
     config: Config | None = None,
 ) -> ImageResult:
     _validate_legacy_image_config(config)
+    _validate_image_timeout(timeout)
     return await _wait_for_image_job(
         job_id,
         output,
         transparent=transparent,
-        timeout=timeout,
     )
-
-
-def _pending_image_result(status: ImageJobStatus, output: str | Path) -> ImageResult:
-    return ImageResult(
-        path=Path(output),
-        model_used=_CODEX_MODEL,
-        conversation_id=uuid.uuid4(),
-        prompt="",
-        width=0,
-        height=0,
-        job_id=status.job_id,
-        status=status.status,
-        ready=False,
-        provider=status.provider,
-        provenance=status.provenance,
-    )
-
-
-def _pending_operation_result(state_path: Path, state: dict[str, Any]) -> ImageResult:
-    job_id = str(state["job_id"])
-    status = "accepted" if job_id else "submitting"
-    return ImageResult(
-        path=Path(str(state["output_path"])),
-        model_used=_CODEX_MODEL,
-        conversation_id=uuid.uuid4(),
-        prompt="",
-        width=0,
-        height=0,
-        job_id=job_id,
-        status=status,
-        ready=False,
-        provider="codex",
-        provenance={
-            "operation_id": str(state["operation_id"]),
-            "operation_state": str(state_path),
-            "recoverable": True,
-        },
-        idempotency_key=str(state["idempotency_key"]),
-    )
-
-
-def _consume_operation_task(
-    task: asyncio.Task[tuple[ImageResult, bool, dict[str, Any]]],
-) -> None:
-    if task.cancelled():
-        return
-    task.exception()
 
 
 async def _finish_image_operation(
@@ -1076,55 +1038,20 @@ async def _finish_image_operation(
         return result, replayed, state
 
 
-async def _await_image_operation(
-    task: asyncio.Task[tuple[ImageResult, bool, dict[str, Any]]],
-    timeout: float | None,
-    state_path: Path,
-    initial_state: dict[str, Any],
-) -> tuple[ImageResult, bool, dict[str, Any]]:
-    if timeout is None:
-        return await task
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), max(timeout, 0.0))
-    except asyncio.TimeoutError:
-        task.add_done_callback(_consume_operation_task)
-        try:
-            state = _read_operation(state_path)
-        except (FileNotFoundError, PermissionError, ValueError):
-            state = initial_state
-        return _pending_operation_result(state_path, state), False, state
-
-
 async def _wait_for_image_job(
     job_id: str,
     output: str | Path,
     *,
     transparent: bool = False,
-    timeout: float | None = None,
 ) -> ImageResult:
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + max(timeout, 0.0)
-    last: ImageJobStatus | None = None
     while True:
-        if deadline is not None and loop.time() >= deadline and last is not None:
-            return _pending_image_result(last, output)
         try:
             status = await get_image_job(job_id)
         except AgentError as exc:
             if not _is_transient_image_error(exc):
                 raise
-            if deadline is not None and loop.time() >= deadline:
-                unknown = ImageJobStatus(
-                    job_id=job_id,
-                    status="unknown",
-                    ready=False,
-                    model_used=_CODEX_MODEL,
-                    provider="codex",
-                )
-                return _pending_image_result(unknown, output)
-            await _wait_for_poll(_poll_delay(deadline))
+            await _wait_for_poll(2.0)
             continue
-        last = status
         if status.status == "done":
             try:
                 return await download_image_job(job_id, output, transparent=transparent)
@@ -1133,13 +1060,7 @@ async def _wait_for_image_job(
                     raise
         elif status.status in {"failed", "cancelled", "canceled"}:
             raise _terminal_job_error(status)
-        await _wait_for_poll(_poll_delay(deadline))
-
-
-def _poll_delay(deadline: float | None) -> float:
-    if deadline is None:
-        return 2.0
-    return min(2.0, max(deadline - asyncio.get_running_loop().time(), 0.0))
+        await _wait_for_poll(2.0)
 
 
 # ##################################################################
@@ -1211,6 +1132,7 @@ async def generate_image(
 ) -> ImageResult:
     _validate_legacy_image_config(config)
     _validate_image_route(prompt, width, height, provider, model, steps)
+    _validate_image_timeout(timeout)
 
     # validate input image(s) if provided. accept a single path or a list.
     input_image_path: Path | list[Path] | None = None
@@ -1256,20 +1178,12 @@ async def generate_image(
             body, _operation_output_intent(output), idempotency_key
         )
         state_path = _operation_state_path(operation_id, operation_state)
-        _, initial_state = _prepare_operation(
-            body, output, transparent, idempotency_key, operation_state
-        )
-        operation = asyncio.create_task(
-            _finish_image_operation(
-                state_path,
-                body,
-                output,
-                transparent,
-                idempotency_key,
-            )
-        )
-        result, submission_replayed, state = await _await_image_operation(
-            operation, timeout, state_path, initial_state
+        result, submission_replayed, state = await _finish_image_operation(
+            state_path,
+            body,
+            output,
+            transparent,
+            idempotency_key,
         )
         durable_key = str(state["idempotency_key"])
         job_id = result.job_id
@@ -1338,12 +1252,9 @@ async def resume_image_operation(
     config: Config | None = None,
 ) -> ImageResult:
     _validate_legacy_image_config(config)
+    _validate_image_timeout(timeout)
     selected = Path(state_path).expanduser().absolute()
-    initial_state = _read_operation(selected)
-    operation = asyncio.create_task(_finish_resumed_image_operation(selected, output))
-    result, _, state = await _await_image_operation(
-        operation, timeout, selected, initial_state
-    )
+    result, _, state = await _finish_resumed_image_operation(selected, output)
     result.idempotency_key = str(state["idempotency_key"])
     return result
 

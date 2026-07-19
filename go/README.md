@@ -96,17 +96,7 @@ Uses only the durable Mac mini Codex image service at `http://10.0.0.46:8830`. T
 ```go
 import "github.com/darrenoakey/daz-agent-sdk/go/capability"
 
-// Wire up the image capability
-agent.ImageFn = func(ctx context.Context, prompt string, opts sdk.ImageCallOpts) (*sdk.ImageResult, error) {
-    return capability.GenerateImage(ctx, prompt, capability.ImageOpts{
-        Width:  opts.Width,
-        Height: opts.Height,
-        Output: opts.Output,
-        Config: opts.Config,
-    })
-}
-
-result, err := agent.Image(ctx, "a red apple on a white table", sdk.ImageOpts{
+result, err := capability.GenerateImage(ctx, "a red apple on a white table", capability.ImageOpts{
     Width:  512,
     Height: 512,
     Output: "/tmp/apple.png",
@@ -116,15 +106,17 @@ fmt.Println("Durable job:", result.JobID, result.Status, result.Ready)
 fmt.Println("Submission identity:", result.IdempotencyKey, result.Replayed)
 ```
 
-When the local wait expires, `Ready` is false and the durable `JobID` remains recoverable. No alternate image provider is attempted.
+`Agent.Image` is disabled and cannot accept a caller-supplied adapter. This
+prevents external generators from bypassing the canonical capability route.
 
-`GenerateImage` creates one UUID key when omitted and reuses the exact encoded body and key for bounded transport retries. Direct asynchronous submission uses `capability.SubmitImageJob` and requires `ImageOpts.IdempotencyKey`. Structured `409` and `410` failures retain the original job ID and key in `AgentError.Attempts`.
+Image deadlines are actively disabled. `GenerateImage` and durable resume operations ignore caller context cancellation/deadlines and wait indefinitely; nonzero compatibility timeout fields return an invalid-request error before service I/O. No alternate image provider is attempted.
+
+`GenerateImage` creates one UUID key when omitted and reuses the exact encoded body and key for transport retries until the service accepts the durable submission. Direct asynchronous submission uses `capability.SubmitImageJob` and requires `ImageOpts.IdempotencyKey`. Structured `409` and `410` failures retain the original job ID and key in `AgentError.Attempts`.
 
 ```go
 status, err := capability.GetImageJob(ctx, result.JobID)
 result, err = capability.ResumeImageJob(ctx, status.JobID, capability.ImageJobOpts{
     Output: "/tmp/apple.png",
-    Timeout: 10 * time.Minute,
 })
 // For an already-complete job:
 result, err = capability.DownloadImageJob(ctx, status.JobID, "/tmp/apple.png", false)
