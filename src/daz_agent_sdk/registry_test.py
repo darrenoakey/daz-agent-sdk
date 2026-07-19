@@ -172,7 +172,9 @@ def test_get_models_for_tier_returns_list():
 def test_get_models_for_tier_respects_chain_order():
     cfg = Config(
         tiers={
-            "high": TierConfig(chain=["registry:registry-high", "registry:registry-low"]),
+            "high": TierConfig(
+                chain=["registry:registry-high", "registry:registry-low"]
+            ),
         }
     )
     register_provider_module("registry", "daz_agent_sdk.registry_test")
@@ -184,7 +186,9 @@ def test_get_models_for_tier_respects_chain_order():
 def test_get_models_for_tier_filters_by_capability():
     cfg = Config(
         tiers={
-            "high": TierConfig(chain=["registry:registry-high", "registry:registry-low"]),
+            "high": TierConfig(
+                chain=["registry:registry-high", "registry:registry-low"]
+            ),
         }
     )
     register_provider_module("registry", "daz_agent_sdk.registry_test")

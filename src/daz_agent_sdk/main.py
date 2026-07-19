@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from typing import Any
 
 from daz_agent_sdk.config import load_config
 from daz_agent_sdk.core import Agent
-from daz_agent_sdk.types import Tier
+from daz_agent_sdk.types import AgentError, ErrorKind, Tier
 
 
 # ##################################################################
@@ -16,20 +17,25 @@ async def _run_image(args: argparse.Namespace) -> int:
     from daz_agent_sdk.capabilities.image import (
         _validate_legacy_image_config,
         _validate_image_route,
+        _validate_image_timeout,
         resume_image_operation,
     )
 
     config = load_config()
     _validate_legacy_image_config(config)
-    _validate_image_route("validation", 1, 1, args.provider, None, None)
+    _validate_image_route("validation", 1, 1, args.provider, args.model, args.steps)
+    _validate_image_timeout(args.timeout)
     if args.recover:
         result = await resume_image_operation(
-            args.recover, output=args.output, config=config
+            args.recover, output=args.output, timeout=args.timeout, config=config
         )
         print(str(result.path))
         return 0
     if not args.prompt:
-        raise ValueError("--prompt is required unless --recover is used")
+        raise AgentError(
+            "--prompt is required unless --recover is used",
+            kind=ErrorKind.INVALID_REQUEST,
+        )
     agent = Agent(config)
     output = args.output if args.output else None
 
@@ -48,7 +54,10 @@ async def _run_image(args: argparse.Namespace) -> int:
         output=output,
         image=image_arg,
         transparent=args.transparent,
+        timeout=args.timeout,
         provider=args.provider,
+        model=args.model,
+        steps=args.steps,
         idempotency_key=args.idempotency_key,
         operation_state=args.state,
     )
@@ -129,6 +138,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Image provider (only 'codex' is supported; routes to the mac mini image_generation_service)",
     )
+    img_p.add_argument(
+        "--model",
+        default=None,
+        help="Compatibility option; explicit image model selection is actively disabled",
+    )
+    img_p.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="Compatibility option; image step overrides are actively disabled",
+    )
+    img_p.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Compatibility option; finite image deadlines are actively disabled",
+    )
 
     # models
     models_p = sub.add_parser("models", help="List available models")
@@ -164,4 +190,9 @@ def main() -> int:
         parser.print_help()
         return 1
 
-    return asyncio.run(handler(args))
+    try:
+        return asyncio.run(handler(args))
+    except AgentError as error:
+        message = " ".join(str(error).splitlines()).strip()
+        print(f"Error: {message}", file=sys.stderr)
+        return 1

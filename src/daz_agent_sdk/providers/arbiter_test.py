@@ -74,7 +74,9 @@ async def test_available_wrong_port_returns_false() -> None:
 # ##################################################################
 # list models — online tests
 @pytest.mark.asyncio
-async def test_list_models_returns_model_info_instances(arbiter_tunnel_url: str) -> None:
+async def test_list_models_returns_model_info_instances(
+    arbiter_tunnel_url: str,
+) -> None:
     provider = ArbiterProvider(base_url=arbiter_tunnel_url)
     models = await provider.list_models()
     assert len(models) > 0

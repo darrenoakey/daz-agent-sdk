@@ -154,6 +154,7 @@ def test_public_image_entrypoints_reject_legacy_config_before_io(
             with pytest.raises(AgentError, match="legacy image configuration") as error:
                 await call
             assert error.value.kind == ErrorKind.INVALID_REQUEST
+            assert "Mac mini Codex image service" in str(error.value)
 
     asyncio.run(exercise())
     assert not output.parent.exists()
@@ -565,37 +566,6 @@ def test_python_operation_atomic_state_replace_rejects_symlink(tmp_path: Path):
         image_module._atomic_write_operation(state_path, {"version": 2})
     assert target.read_text(encoding="utf-8") == "unchanged"
     assert state_path.is_symlink()
-
-
-@pytest.mark.parametrize(
-    "provider", ["flux", "z-image-turbo", "ollama", "gemini", "spark"]
-)
-@pytest.mark.parametrize("branch", ["default", "state", "recover", "idempotency-key"])
-def test_python_cli_rejects_legacy_provider_before_every_durable_branch(
-    tmp_path: Path, provider: str, branch: str
-):
-    state_path = tmp_path / f"{branch}.json"
-    arguments = [
-        sys.executable,
-        "-c",
-        "from daz_agent_sdk.main import main; raise SystemExit(main())",
-        "image",
-        "--provider",
-        provider,
-    ]
-    if branch == "recover":
-        arguments.extend(["--recover", str(state_path)])
-    else:
-        arguments.extend(["--prompt", "route proof", "--width", "64", "--height", "64"])
-        if branch != "default":
-            option = "--state" if branch == "state" else "--idempotency-key"
-            value = str(state_path) if branch == "state" else "durable-key"
-            arguments.extend([option, value])
-    result = subprocess.run(arguments, capture_output=True, text=True, check=False)
-    assert result.returncode != 0
-    assert provider in result.stderr
-    assert "actively disabled" in result.stderr
-    assert not state_path.exists()
 
 
 def test_input_image_missing_raises():

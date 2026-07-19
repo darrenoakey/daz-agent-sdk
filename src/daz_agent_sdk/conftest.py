@@ -30,14 +30,21 @@ def _loopback_port() -> int:
 def _read_arbiter_models(base_url: str) -> set[str]:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(f"{base_url}/v1/models", timeout=2.0) as response:
-        if response.status != 200 or response.headers.get_content_type() != "application/json":
+        if (
+            response.status != 200
+            or response.headers.get_content_type() != "application/json"
+        ):
             raise RuntimeError(
                 f"arbiter /v1/models verification failed: status={response.status} "
                 f"content_type={response.headers.get_content_type()}"
             )
         payload = json.load(response)
-    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
-        raise RuntimeError("arbiter /v1/models did not return its exact JSON array schema")
+    if not isinstance(payload, list) or not all(
+        isinstance(item, dict) for item in payload
+    ):
+        raise RuntimeError(
+            "arbiter /v1/models did not return its exact JSON array schema"
+        )
     names = {
         str(item.get("llm_name") or item.get("model_id"))
         for item in payload
@@ -45,7 +52,9 @@ def _read_arbiter_models(base_url: str) -> set[str]:
     }
     missing = _REQUIRED_ARBITER_MODELS - names
     if missing:
-        raise RuntimeError(f"arbiter /v1/models is missing required models: {sorted(missing)}")
+        raise RuntimeError(
+            f"arbiter /v1/models is missing required models: {sorted(missing)}"
+        )
     return names
 
 
@@ -56,9 +65,9 @@ def _await_tunnel(process: subprocess.Popen[bytes], base_url: str) -> None:
     last_error = "no request attempted"
     for _ in range(100):
         if process.poll() is not None:
-            stderr = (process.stderr.read() if process.stderr is not None else b"").decode(
-                errors="replace"
-            )
+            stderr = (
+                process.stderr.read() if process.stderr is not None else b""
+            ).decode(errors="replace")
             raise RuntimeError(
                 f"arbiter ssh tunnel exited with code {process.returncode}: {stderr.strip()}"
             )
@@ -68,7 +77,9 @@ def _await_tunnel(process: subprocess.Popen[bytes], base_url: str) -> None:
         except Exception as exc:
             last_error = str(exc)
             threading.Event().wait(0.1)
-    raise RuntimeError(f"arbiter ssh tunnel never passed /v1/models verification: {last_error}")
+    raise RuntimeError(
+        f"arbiter ssh tunnel never passed /v1/models verification: {last_error}"
+    )
 
 
 # ##################################################################

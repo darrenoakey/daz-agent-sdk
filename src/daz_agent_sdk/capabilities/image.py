@@ -74,7 +74,8 @@ def _validate_legacy_image_config(config: Config | None) -> None:
     if configured:
         fields = ", ".join(configured)
         raise AgentError(
-            f"legacy image configuration is actively disabled: {fields}",
+            f"legacy image configuration is actively disabled: {fields} — "
+            "use the Mac mini Codex image service",
             kind=ErrorKind.INVALID_REQUEST,
         )
 

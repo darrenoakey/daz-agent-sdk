@@ -206,6 +206,8 @@ daz-agent-sdk image --prompt "A fox" --width 512 --height 512 --output fox.png -
 daz-agent-sdk image --recover fox.state.json
 ```
 
+CLI image failures caused by invalid requests or unavailable image operations print one concise `Error: ...` line without a Python traceback. Legacy `--provider`, `--model`, `--steps`, and finite `--timeout` compatibility controls are retained only to fail closed with guidance to use the durable Mac mini Codex image service.
+
 State is atomically replaced with mode `0600`; it contains the exact effective POST body and key until the returned job ID is durably recorded.
 
 ### Text-to-Speech
